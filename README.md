@@ -28,22 +28,47 @@ Basalt 是一个面向 **AI Vibecoding** 的安全基座框架。开发者（或
 
 ```bash
 # 1. 克隆
-git clone https://github.com/genesiu/basalt.git && cd basalt
+git clone https://github.com/Genesiu/Basalt.git && cd Basalt
 
 # 2. 环境
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# 3. 启动
+# 3. 启动（无需任何额外配置）
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-首次启动会自动：
-- 生成 `.env` 密钥文件（AES + JWT，`chmod 600`）
-- 创建 SQLite 数据库及审计防删改触发器
-- 播种三员角色 + 管理员账号
+### 零配置自动初始化
 
-**默认账号**：
+**克隆即用，无需手动创建任何文件。** 首次 `uvicorn main:app` 启动时，框架会自动完成全部初始化：
+
+```
+uvicorn main:app 启动
+  │
+  ├─ 1. 检测 .env 不存在 → 自动生成密钥文件
+  │     ├─ AES_ENCRYPTION_KEY_B64（数据加密密钥）
+  │     ├─ JWT_SECRET_KEY（会话签名密钥）
+  │     └─ chmod 600（仅属主可读）
+  │
+  ├─ 2. 检测 basalt.db 不存在 → 自动创建数据库
+  │     ├─ 创建全部表结构（User/Role/AuditLog/...）
+  │     ├─ 注入审计日志防删改触发器
+  │     └─ 播种等保基线配置参数
+  │
+  ├─ 3. 播种默认角色
+  │     ├─ sysadmin  → 系统管理员（安全等级：核心）
+  │     ├─ auditadmin → 审计管理员（安全等级：敏感）
+  │     └─ ordinary  → 普通用户（安全等级：内部）
+  │
+  └─ 4. 播种默认管理员账号（密码首次登录强制修改）
+        ├─ sysadmin / Admin!@#123
+        └─ auditadmin / Admin!@#123
+```
+
+> **注意**：`.env` 和 `basalt.db` 被 `.gitignore` 排除，不会提交到 Git。
+> 每个开发者克隆后首次启动都会自动生成自己的独立密钥和数据库，**互不影响**。
+
+### 默认账号
 
 | 用户名 | 密码 | 角色 | 首次登录 |
 |--------|------|------|---------|

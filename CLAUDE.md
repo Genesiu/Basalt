@@ -9,6 +9,14 @@ Basalt 是一个符合 GB/T 22239-2019（等保三级）标准的 **安全微内
 技术栈：FastAPI + SQLAlchemy 2.0 (Async) + SQLite/PostgreSQL + Vue 3。
 所有安全能力（鉴权、审计、加密、MAC）已内建于 `core/` 目录，**禁止修改 core/ 下的文件**。
 
+## 零配置初始化
+
+**`.env` 和 `basalt.db` 不在 Git 中**，它们在首次 `uvicorn main:app` 时自动生成：
+- `.env`：由 `main.py` 的 `_load_or_create_env()` 生成 AES+JWT 密钥，`chmod 600`
+- `basalt.db`：由 `@app.on_event("startup")` 中的 `create_all()` 建表 + 播种角色/用户/配置
+- 默认账号 `sysadmin` / `Admin!@#123`（首次登录强制改密）
+- 如需重置：`rm basalt.db .env` 后重启即可
+
 ## 强制规则（MUST）
 
 ### 1. 路由安全装饰器
