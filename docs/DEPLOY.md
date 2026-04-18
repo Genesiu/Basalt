@@ -35,10 +35,19 @@ AES_ENCRYPTION_KEY_B64=xxxxx
 JWT_SECRET_KEY=xxxxx
 ```
 
-**生产环境**须额外配置 CORS：
+**生产环境**须额外配置：
 ```bash
 # 编辑 .env，添加：
 CORS_ORIGINS=https://app.example.com,https://admin.example.com
+
+# 如需切换数据库（默认 SQLite）：
+# DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/basalt
+# DATABASE_URL=mysql+aiomysql://user:pass@localhost:3306/basalt
+
+# 备份配置（可选，也可在 WebUI「备份管理」中动态修改）：
+BACKUP_ENABLED=true
+BACKUP_CRON_HOUR=2
+BACKUP_KEEP_DAYS=30
 ```
 
 ### 2.3 Systemd 服务
@@ -106,15 +115,17 @@ server {
 }
 ```
 
-### 2.5 定时备份
+### 2.5 备份管理
 
-```bash
-# 添加 crontab
-crontab -e
+Basalt 内置 APScheduler 调度器，**无需配置系统 crontab**。
 
-# 每天 2:00 执行备份
-0 2 * * * /opt/basalt/backup.sh >> /var/log/basalt-backup.log 2>&1
-```
+- **WebUI 控制**：登录管理后台 → 菜单「备份管理」→ 开关/时间/路径/保留天数
+- **API 控制**：`PUT /api/v1/compliance/backup/config`
+- **手动触发**：`POST /api/v1/compliance/backup/trigger`
+- **默认参数**：每天 2:00 自动备份，保留 30 天
+- **备份内容**：Gzip 压缩 + SHA-256 完整性校验码
+
+> ⚠️ PostgreSQL/MySQL 环境下，备份使用 `pg_dump` / `mysqldump`，请确保相应工具已安装。
 
 ## 三、安全加固清单
 
@@ -125,8 +136,10 @@ crontab -e
 - [ ] Nginx TLS 已启用
 - [ ] IP 白名单已添加管理网段
 - [ ] 默认管理员密码已在首次登录时修改
-- [ ] crontab 备份已配置
+- [ ] 管理员已绑定 TOTP 双因子认证
+- [ ] 备份已在「备份管理」面板中确认开启
 - [ ] 防火墙仅开放 80/443 端口
+- [ ] PostgreSQL/MySQL 环境下已手动部署审计防删改触发器
 
 ## 四、前端部署
 

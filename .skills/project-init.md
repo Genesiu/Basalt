@@ -45,6 +45,12 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 # 生产环境建议使用 KMS 或 Vault 管理密钥
 AES_ENCRYPTION_KEY_B64=<随机生成的 Base64 密钥>
 JWT_SECRET_KEY=<随机生成的 Base64 密钥>
+# 可选配置：
+# DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/basalt
+# CORS_ORIGINS=https://your-domain.com
+# BACKUP_ENABLED=true
+# BACKUP_CRON_HOUR=2
+# BACKUP_KEEP_DAYS=30
 ```
 
 ### 数据库（自动生成）
@@ -77,7 +83,7 @@ curl -X POST http://localhost:8000/api/v1/auth/reset-expired-password \
   -H "Content-Type: application/json" \
   -d '{"username":"sysadmin","old_password":"Admin!@#123","new_password":"你的新密码"}'
 ```
-新密码要求：≥8位，含大小写+数字+特殊字符，不得包含用户名。
+新密码要求：≥8位，含大小写+数字+特殊字符（支持 `!@#$%^&*()_+-=~.,?`），不得包含用户名。
 
 ### Q: 想重置整个环境
 ```bash
@@ -90,3 +96,8 @@ uvicorn main:app ...     # 重新启动，自动重建
 ```
 CORS_ORIGINS=https://your-domain.com
 ```
+
+### Q: 如何管理备份？
+- **WebUI**：登录后台 → 菜单「备份管理」→ 开关/时间/路径/保留天数
+- **API**：`GET /api/v1/compliance/backup/status`
+- 内置 APScheduler 调度器，无需配置系统 crontab

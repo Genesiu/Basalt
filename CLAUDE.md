@@ -162,16 +162,21 @@ basalt/
 | POST | /api/v1/auth/login | 登录（OAuth2 表单） |
 | POST | /api/v1/auth/reset-expired-password | 首登/过期改密 |
 | PUT | /api/v1/auth/change-password | 已登录改密 |
-| POST | /api/v1/auth/totp/setup | 绑定 TOTP |
+| POST | /api/v1/auth/totp/setup | 生成 TOTP 密钥（不写库） |
+| POST | /api/v1/auth/totp/verify | 验证 6 位码后确认绑定 |
 | GET | /api/v1/users/me | 当前用户信息 + 权限树 |
 | GET | /api/v1/roles/ | 角色列表 |
 | GET | /api/v1/roles/security-levels | 安全等级选项 |
 | GET | /api/v1/audit/ | 审计日志 |
 | GET | /api/v1/audit/export/csv | 导出审计 CSV |
+| GET | /api/v1/compliance/backup/status | 备份状态 |
+| PUT | /api/v1/compliance/backup/config | 修改备份策略 |
+| POST | /api/v1/compliance/backup/trigger | 手动触发备份 |
 
 ## 数据库
 
 - 开发：SQLite (`basalt.db`)
-- 生产：建议 PostgreSQL
+- 生产：建议 PostgreSQL（通过 `.env` 中 `DATABASE_URL` 切换）
 - ORM：SQLAlchemy 2.0 Async
 - 获取会话：`db: AsyncSession = Depends(get_db)`
+- 持久化：数据库在重启时保留，仅首次运行时自动创建

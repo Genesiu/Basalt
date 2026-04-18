@@ -1,8 +1,8 @@
 # Basalt API 接口文档
 
-> 基础地址：`http://localhost:8000/api/v1`  
-> 认证方式：Bearer Token（JWT）  
-> 内容类型：`application/json`（除登录接口外）
+> **基础地址**：`http://localhost:8000/api/v1`  
+> **认证方式**：Bearer Token（JWT）  
+> **内容类型**：`application/json`（除登录接口外）
 
 ---
 
@@ -51,7 +51,7 @@
 ```
 
 **密码策略**：
-- 至少 8 位，含大小写字母 + 数字 + 特殊字符
+- 至少 8 位，含大小写字母 + 数字 + 特殊字符（支持 `!@#$%^&*()_+-=~.,?`）
 - 不得与用户名相同或包含用户名
 - 不得与近 5 次使用过的密码相同
 
@@ -72,20 +72,38 @@
 
 ### POST `/auth/totp/setup` 🔒
 
-为当前用户绑定 TOTP 双因子认证。
+第一步：为当前用户生成 TOTP 密钥和 QR 码。**此时不写入数据库**。
 
 **响应**：
 ```json
 {
   "secret": "JBSWY3DPEHPK3PXP",
-  "provisioning_uri": "otpauth://totp/basalt:sysadmin?secret=...",
-  "message": "请使用 Authenticator 应用扫描绑定"
+  "provisioning_uri": "otpauth://totp/Basalt-Framework:sysadmin?secret=...",
+  "message": "请使用 Authenticator 应用扫描二维码，然后输入 6 位验证码完成绑定。"
+}
+```
+
+### POST `/auth/totp/verify` 🔒
+
+第二步：验证用户输入的 6 位 TOTP 码。验证通过后才将 secret 写入数据库，正式完成绑定。
+
+```json
+{
+  "secret": "JBSWY3DPEHPK3PXP",
+  "code": "123456"
+}
+```
+
+**响应**：
+```json
+{
+  "message": "双因子认证绑定成功！下次登录将需要输入动态验证码。"
 }
 ```
 
 ### DELETE `/auth/totp/cancel` 🔒
 
-取消正在进行的 TOTP 绑定。
+取消已绑定的 TOTP（清除数据库中的 secret）。
 
 ---
 
@@ -101,7 +119,7 @@
   "username": "sysadmin",
   "role_code": "sysadmin",
   "role_name": "系统管理员",
-  "permissions": ["policy:manage", "user:manage", "role:manage"],
+  "permissions": ["policy:manage", "user:manage", "role:manage", "audit:view", "audit:export"],
   "totp_force_required": true,
   "last_login_at": "2026-04-18 10:00:00"
 }
@@ -109,7 +127,7 @@
 
 ### PUT `/users/me` 🔒
 
-修改个人密码。
+修改个人密码（需原密码 + 新密码，前端已增加二次确认）。
 
 ### GET `/users/` 🔒🛡️
 
@@ -131,16 +149,9 @@
 
 修改用户角色或状态。
 
-```json
-{
-  "role_code": "auditadmin",
-  "is_active": true
-}
-```
-
 ### DELETE `/users/{user_id}` 🔒🛡️
 
-停用用户（自动擦除 TOTP 密钥和加密数据，使所有 Token 失效）。
+停用用户（自动擦除 TOTP 密钥和加密数据）。
 
 ---
 
@@ -150,41 +161,13 @@
 
 获取所有角色（含安全等级）。
 
-```json
-[
-  {
-    "id": 1, "code": "sysadmin", "name": "系统管理员",
-    "permissions": ["policy:manage", "user:manage", "role:manage"],
-    "max_clearance": 3, "max_clearance_label": "核心"
-  }
-]
-```
-
 ### GET `/roles/security-levels` 🔒🛡️
 
-获取安全等级选项（供下拉框使用）。
-
-```json
-[
-  {"value": 0, "label": "公开", "code": "PUBLIC"},
-  {"value": 1, "label": "内部", "code": "INTERNAL"},
-  {"value": 2, "label": "敏感", "code": "SENSITIVE"},
-  {"value": 3, "label": "核心", "code": "CORE"}
-]
-```
+获取安全等级选项（公开/内部/敏感/核心）。
 
 ### POST `/roles/` 🔒🛡️
 
 创建新角色。
-
-```json
-{
-  "code": "finance",
-  "name": "财务专员",
-  "permissions": ["contract:view", "report:generate"],
-  "max_clearance": 2
-}
-```
 
 ### PUT `/roles/{role_id}` 🔒🛡️
 
@@ -197,10 +180,6 @@
 ### GET `/audit/` 🔒🛡️
 
 查询审计日志（需 `audit:view` 权限）。
-
-| 参数 | 类型 | 默认 | 说明 |
-|------|------|------|-----|
-| limit | int | 200 | 返回条数 |
 
 ### GET `/audit/{log_id}` 🔒🛡️
 
@@ -239,16 +218,49 @@
 
 添加 IP 白名单规则。
 
-```json
-{
-  "ip_network": "192.168.1.0/24",
-  "description": "办公网络"
-}
-```
-
 ### DELETE `/config/whitelist/{item_id}` 🔒🛡️
 
 删除 IP 白名单规则。
+
+---
+
+## 六、备份管理 (`/compliance`)
+
+### GET `/compliance/backup/status` 🔒🛡️
+
+获取备份调度状态及最近备份列表。
+
+```json
+{
+  "enabled": true,
+  "cron_hour": 2,
+  "cron_minute": 0,
+  "backup_dir": "/opt/basalt/backups",
+  "keep_days": 30,
+  "recent_backups": [
+    {"filename": "basalt_20260418_020000.db.gz", "size_kb": 128, "time": "2026-04-18 02:00:00"}
+  ],
+  "total_backups": 15
+}
+```
+
+### PUT `/compliance/backup/config` 🔒🛡️
+
+动态修改备份策略（开关、时间、路径、保留天数）。
+
+```json
+{
+  "enabled": true,
+  "cron_hour": 3,
+  "cron_minute": 0,
+  "backup_dir": "/opt/basalt/backups",
+  "keep_days": 15
+}
+```
+
+### POST `/compliance/backup/trigger` 🔒🛡️
+
+手动触发一次即时备份。返回备份文件信息和 SHA-256 校验码。
 
 ---
 

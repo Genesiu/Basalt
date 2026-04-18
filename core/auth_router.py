@@ -229,16 +229,51 @@ async def setup_totp(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """
+    第一步：生成 TOTP 密钥和 QR 码 URI。
+    此时 secret 不写入数据库，需用户通过 /totp/verify 验证后才正式绑定。
+    """
     if current_user.totp_secret:
         raise HTTPException(status_code=400, detail="该账号已绑定双因子认证，如需重置请联系安全管理员。")
     secret = TOTPManager.generate_secret()
     uri = TOTPManager.get_provisioning_uri(secret, current_user.username)
-    current_user.totp_secret = secret
+    # Modified: secret 暂存返回给前端，不写入数据库
+    return TOTPSetupResponse(secret=secret, provisioning_uri=uri,
+        message="请使用 Authenticator 应用扫描二维码，然后输入 6 位验证码完成绑定。")
+
+
+class TOTPVerifyRequest(BaseModel):
+    secret: str
+    code: str
+
+
+@router.post("/totp/verify")
+async def verify_and_bind_totp(
+    body: TOTPVerifyRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    第二步：用户输入 Authenticator 上的 6 位验证码。
+    验证通过后才将 secret 写入数据库，完成正式绑定。
+    """
+    if current_user.totp_secret:
+        raise HTTPException(status_code=400, detail="该账号已绑定双因子认证。")
+    
+    # 验证用户输入的 6 位码是否正确
+    if not TOTPManager.verify_totp(body.secret, body.code):
+        await create_audit_log(db=db, request=request, action="TOTP_VERIFY_FAILED", status="FAILED",
+            details={"reason": "验证码错误"}, current_user_id=current_user.username)
+        raise HTTPException(status_code=400, detail="验证码错误，请检查 Authenticator 上的当前代码后重试。")
+    
+    # 验证通过，写入数据库
+    current_user.totp_secret = body.secret
     await db.commit()
     await create_audit_log(db=db, request=request, action="TOTP_BIND", status="SUCCESS",
         details={}, current_user_id=current_user.username)
-    return TOTPSetupResponse(secret=secret, provisioning_uri=uri,
-        message="请使用 Authenticator 应用扫描绑定，绑定后登录需提供动态验证码。")
+    return {"message": "双因子认证绑定成功！下次登录将需要输入动态验证码。"}
+
 
 @router.delete("/totp/cancel")
 async def cancel_totp_setup(
@@ -251,3 +286,4 @@ async def cancel_totp_setup(
     await create_audit_log(db=db, request=request, action="TOTP_BIND_CANCELLED", status="SUCCESS",
         details={}, current_user_id=current_user.username)
     return {"message": "TOTP 绑定已取消。"}
+

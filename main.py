@@ -127,7 +127,7 @@ async def on_startup():
     async with AsyncSessionLocal() as session:
         # 1. 初始化预置角色
         default_roles = [
-            {"code": "sysadmin", "name": "系统管理员", "permissions": ["policy:manage", "user:manage", "role:manage"], "max_clearance": 3},
+            {"code": "sysadmin", "name": "系统管理员", "permissions": ["policy:manage", "user:manage", "role:manage", "audit:view", "audit:export"], "max_clearance": 3},
             {"code": "auditadmin", "name": "审计管理员", "permissions": ["audit:view", "audit:export"], "max_clearance": 2},
             {"code": "ordinary", "name": "普通用户", "permissions": [], "max_clearance": 1}
         ]

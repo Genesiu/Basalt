@@ -22,7 +22,7 @@ Basalt 是一个面向 **AI Vibecoding** 的安全基座框架。开发者（或
 | 🚫 防暴力破解 | IP 级 + 账号级双维度锁定 | 8.1.4.1d/e |
 | 📋 密码策略 | 复杂度 + 历史 + 过期 + 首登改密 | 8.1.4.1 |
 | 🌐 IP 白名单 | CIDR 段级管理接口限制 | 8.1.4.4c |
-| 💾 数据备份 | 自动化备份脚本（dump + SHA-256） | 8.1.4.9 |
+| 💾 数据备份 | APScheduler + WebUI 控制 + SHA-256 校验 | 8.1.4.9 |
 
 ## 🚀 5 分钟快速启动
 
@@ -99,7 +99,7 @@ basalt/
 │   └── audit_log.py        # 审计日志表
 ├── modules/                # ⬇️ 你的业务模块放这里
 │   └── example_app/        # 示例模块
-├── backup.sh               # 数据库备份脚本
+├── backups/                # 数据库备份目录（自动创建）
 ├── requirements.txt        # Python 依赖
 └── .env                    # 自动生成的密钥（不提交 Git）
 ```
@@ -158,6 +158,7 @@ AI 会自动遵循框架规范生成合规代码。
 - [API 接口文档](docs/API.md) — 全部 REST API 详细说明
 - [开发者手册](docs/DEVELOPMENT.md) — 架构设计、扩展指南、安全约束
 - [部署指南](docs/DEPLOY.md) — 生产环境部署、Nginx 配置、备份策略
+- [等保测评指引](docs/COMPLIANCE_GUIDE.md) — GB/T 22239 条款到功能的可验证映射
 
 ## 📜 合规声明
 
