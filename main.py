@@ -25,6 +25,10 @@ def _load_or_create_env():
     if "JWT_SECRET_KEY" not in env_vars:
         env_vars["JWT_SECRET_KEY"] = base64.b64encode(os.urandom(32)).decode()
         changed = True
+    # Added: 数据库 URL（默认 SQLite，可切换 PostgreSQL/MySQL）
+    if "DATABASE_URL" not in env_vars:
+        env_vars["DATABASE_URL"] = "sqlite+aiosqlite:///./basalt.db"
+        changed = True
     
     if changed:
         with open(_ENV_FILE, "w") as f:
@@ -43,7 +47,7 @@ def _load_or_create_env():
 _load_or_create_env()
 
 from fastapi import FastAPI
-from core.database import engine, Base, AsyncSessionLocal
+from core.database import engine, Base, AsyncSessionLocal, is_sqlite, get_db_type
 from sqlalchemy.future import select
 from sqlalchemy import text
 from models.system import User, Role, SystemConfig
@@ -55,6 +59,7 @@ from core.config_router import router as config_router
 from core.audit_router import router as audit_router
 from core.user_router import router as user_router
 from core.role_router import router as role_router
+from core.compliance_router import router as compliance_router
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -87,33 +92,36 @@ app.include_router(config_router, prefix="/api/v1/config")
 app.include_router(audit_router, prefix="/api/v1/audit")
 app.include_router(user_router, prefix="/api/v1/users")
 app.include_router(role_router, prefix="/api/v1/roles")
+app.include_router(compliance_router, prefix="/api/v1/compliance")
 app.include_router(example_router, prefix="/api/v1")
 
 @app.on_event("startup")
 async def on_startup():
     async with engine.begin() as conn:
-        # SQLite 快速建表
         await conn.run_sync(Base.metadata.create_all)
 
-        # Added: 等保 8.1.4.3c — 审计日志表防删改保护（SQLite 触发器）
-        # 禁止任何 UPDATE 或 DELETE 操作，确保 APPEND-ONLY
-        try:
-            await conn.execute(text("""
-                CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
-                BEFORE UPDATE ON audit_logs
-                BEGIN
-                    SELECT RAISE(ABORT, '等保安全策略：审计日志禁止修改');
-                END;
-            """))
-            await conn.execute(text("""
-                CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete
-                BEFORE DELETE ON audit_logs
-                BEGIN
-                    SELECT RAISE(ABORT, '等保安全策略：审计日志禁止删除');
-                END;
-            """))
-        except Exception as e:
-            logging.info(f"审计触发器已存在或创建异常: {e}")
+        # 等保 8.1.4.3c — 审计日志防删改触发器（按数据库类型条件执行）
+        if is_sqlite():
+            try:
+                await conn.execute(text("""
+                    CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
+                    BEFORE UPDATE ON audit_logs
+                    BEGIN
+                        SELECT RAISE(ABORT, '等保安全策略：审计日志禁止修改');
+                    END;
+                """))
+                await conn.execute(text("""
+                    CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete
+                    BEFORE DELETE ON audit_logs
+                    BEGIN
+                        SELECT RAISE(ABORT, '等保安全策略：审计日志禁止删除');
+                    END;
+                """))
+            except Exception as e:
+                logging.info(f"审计触发器已存在或创建异常: {e}")
+        else:
+            # PostgreSQL/MySQL: 需手动部署对应触发器，参见 docs/DEPLOY.md
+            logging.info(f"[{get_db_type()}] 非 SQLite 环境，请手动部署审计防删改触发器。")
         
     # 播种初创数据
     async with AsyncSessionLocal() as session:
@@ -173,8 +181,12 @@ async def on_startup():
             ]
             session.add_all(defaults)
             await session.commit()
-            print("[SECURITY NOTICE] 等保基线及动态 RBAC 模型映射装载完毕。")
+            print(f"[SECURITY NOTICE] 等保基线及动态 RBAC 模型映射装载完毕。[DB: {get_db_type()}]")
+
+    # Added: 内置定时备份调度器（替代 crontab）
+    from core.scheduler import start_scheduler
+    start_scheduler()
 
 @app.get("/health")
 def health_check():
-    return {"status": "Safem System Operating Normally..."}
+    return {"status": "Basalt Framework Operating Normally", "db": get_db_type()}
