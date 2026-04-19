@@ -88,17 +88,29 @@ basalt/
 │   ├── config_router.py    # 等保基线参数配置
 │   ├── user_router.py      # 用户 CRUD + 停用擦除
 │   ├── role_router.py      # 角色管理 + 安全等级
-│   ├── crypto.py           # AES-256-GCM + bcrypt
+│   ├── crypto.py           # AES-256-GCM + bcrypt (双层加密)
 │   ├── policy.py           # 密码策略引擎
 │   ├── ip_filter.py        # IP 白名单网关
 │   ├── mfa_totp.py         # TOTP 双因子认证
 │   ├── security_label.py   # 安全标记 MAC 骨架
+│   ├── scheduler.py        # APScheduler 备份调度
 │   └── database.py         # SQLAlchemy Async 引擎
 ├── models/
 │   ├── system.py           # User、Role、PasswordHistory 等
 │   └── audit_log.py        # 审计日志表
 ├── modules/                # ⬇️ 你的业务模块放这里
 │   └── example_app/        # 示例模块
+├── frontend/               # 🖥️ Vue 3 管理后台界面
+│   ├── src/views/
+│   │   ├── LoginPage.vue   # 登录页（含 TOTP 验证码）
+│   │   └── AdminDashboard.vue  # 管控平台主界面
+│   ├── src/utils/request.js    # Axios 封装
+│   └── vite.config.js      # Vite 构建配置
+├── docs/                   # 📖 文档
+│   ├── API.md              # REST API 接口文档
+│   ├── COMPLIANCE_GUIDE.md # 等保三级测评指引
+│   ├── DEPLOY.md           # 生产环境部署指南
+│   └── DEVELOPMENT.md      # 开发者手册
 ├── backups/                # 数据库备份目录（自动创建）
 ├── requirements.txt        # Python 依赖
 └── .env                    # 自动生成的密钥（不提交 Git）

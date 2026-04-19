@@ -1,0 +1,158 @@
+/* src/assets/index.css */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+  /* Slate Scale */
+  --slate-50: #f8fafc;
+  --slate-100: #f1f5f9;
+  --slate-200: #e2e8f0;
+  --slate-300: #cbd5e1;
+  --slate-400: #94a3b8;
+  --slate-500: #64748b;
+  --slate-600: #475569;
+  --slate-700: #334155;
+  --slate-800: #1e293b;
+  --slate-900: #0f172a;
+  --slate-950: #020617;
+  
+  /* Primary Scale - Enterprise Stark Blue */
+  --primary-400: #4589ff;
+  --primary-500: #0f62fe;
+  --primary-600: #0043ce;
+  
+  /* Semantic Colors */
+  --danger-500: #ef4444;
+  --danger-900: #7f1d1d;
+  --success-400: #34d399;
+  
+  /* Component tokens */
+  --bg-app: var(--slate-950);
+  --bg-surface: var(--slate-900);
+  --bg-surface-elevated: var(--slate-800);
+  --border-subtle: var(--slate-800);
+  --border-active: var(--slate-600);
+  --text-title: var(--slate-50);
+  --text-body: var(--slate-300);
+  --text-muted: var(--slate-500);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--bg-app);
+  color: var(--text-body);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--text-title);
+  margin-top: 0;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+/* Base Form Elements */
+.luxury-input {
+  width: 100%;
+  background: var(--bg-app);
+  border: 1px solid var(--border-active);
+  color: var(--text-title);
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05) inset;
+}
+
+.luxury-input::placeholder {
+  color: var(--slate-500);
+}
+
+.luxury-input:focus {
+  outline: none;
+  border-color: var(--primary-500);
+  box-shadow: 0 0 0 3px rgba(15, 98, 254, 0.2);
+}
+
+.luxury-input:disabled {
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* Button */
+.luxury-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 12px 24px;
+  background-color: var(--primary-600);
+  color: #fff;
+  border: 1px solid var(--primary-500);
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.025em;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.luxury-btn:hover:not(:disabled) {
+  background-color: var(--primary-500);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+.luxury-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.luxury-btn:disabled {
+  background-color: var(--slate-800);
+  border-color: var(--slate-700);
+  color: var(--slate-500);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Spinner */
+.spinner {
+  animation: spin 1s linear infinite;
+  margin-right: 8px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Toast animations */
+.toast-enter-active, .toast-leave-active {
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.toast-enter-from {
+  opacity: 0;
+  transform: translateY(-20px) scale(0.95);
+}
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.95);
+}
+
+/* Page fade */
+.fade-enter-active, .fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.fade-enter-from, .fade-leave-to {
+  opacity: 0;
+}

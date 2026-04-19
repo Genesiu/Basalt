@@ -22,3 +22,4 @@ Thumbs.db
 dist/
 *.egg-info/
 backups/
+frontend/node_modules/
