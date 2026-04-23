@@ -50,7 +50,7 @@ from fastapi import FastAPI
 from core.database import engine, Base, AsyncSessionLocal, is_sqlite, get_db_type
 from sqlalchemy.future import select
 from sqlalchemy import text
-from models.system import User, Role, SystemConfig
+from models.system import User, Role, SystemConfig, IPWhitelist
 from core.crypto import Hasher
 
 from modules.example_app.api import router as example_router
@@ -182,6 +182,17 @@ async def on_startup():
             session.add_all(defaults)
             await session.commit()
             print(f"[SECURITY NOTICE] 等保基线及动态 RBAC 模型映射装载完毕。[DB: {get_db_type()}]")
+
+        # 4. 初始化默认 IP 白名单（避免首次部署被锁死）
+        res_wl = await session.execute(select(IPWhitelist))
+        if not res_wl.scalars().first():
+            default_whitelist = [
+                IPWhitelist(ip_network="0.0.0.0/0", description="默认放行所有 IPv4（生产环境请收紧为管理网段）"),
+                IPWhitelist(ip_network="::/0", description="默认放行所有 IPv6（生产环境请收紧为管理网段）"),
+            ]
+            session.add_all(default_whitelist)
+            await session.commit()
+            print("[SECURITY NOTICE] 已植入默认 IP 白名单 (0.0.0.0/0)，生产环境请在管理后台「安全策略」中收紧。")
 
     # Added: 内置定时备份调度器（替代 crontab）
     from core.scheduler import start_scheduler
