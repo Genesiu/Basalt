@@ -2,6 +2,60 @@ import base64
 import os
 import bcrypt
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization, hashes
+
+
+class RSACipher:
+    """
+    RSA-2048 非对称加密 — 用于前端凭据传输加密
+    
+    安全设计要点:
+    - 公钥暴露在前端 JS 中是安全的（只能加密，不能解密）
+    - 私钥仅存在于服务端内存（每次启动重新生成，或从环境变量加载）
+    - 使用 OAEP + SHA-256 填充，抗选择密文攻击
+    """
+    _instance = None
+    
+    def __init__(self):
+        # 尝试从环境变量加载持久化私钥，否则生成临时密钥对
+        pem_b64 = os.environ.get("RSA_PRIVATE_KEY_B64")
+        if pem_b64:
+            pem_bytes = base64.b64decode(pem_b64)
+            self._private_key = serialization.load_pem_private_key(pem_bytes, password=None)
+        else:
+            self._private_key = rsa.generate_private_key(
+                public_exponent=65537,
+                key_size=2048,
+            )
+        self._public_key = self._private_key.public_key()
+    
+    @classmethod
+    def get_instance(cls):
+        """单例模式，确保整个应用生命周期使用同一密钥对"""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def get_public_key_pem(self) -> str:
+        """导出 PEM 格式公钥（供前端 jsencrypt 使用）"""
+        return self._public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode('utf-8')
+    
+    def decrypt(self, encrypted_b64: str) -> str:
+        """用私钥解密前端 RSA 加密的 Base64 密文"""
+        encrypted_bytes = base64.b64decode(encrypted_b64)
+        plain_bytes = self._private_key.decrypt(
+            encrypted_bytes,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+        return plain_bytes.decode('utf-8')
 
 class Hasher:
     """

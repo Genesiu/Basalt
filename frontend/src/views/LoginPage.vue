@@ -49,6 +49,15 @@
               <label class="input-label">动态验证码 (TOTP)</label>
               <input type="text" v-model="totpCode" placeholder="请输入 6 位动态口令" class="luxury-input" maxlength="6" inputmode="numeric" />
             </div>
+            <!-- Added: 图形验证码 -->
+            <div class="input-group" v-if="captchaRequired">
+              <label class="input-label">安全验证码</label>
+              <div class="captcha-row">
+                <input type="text" v-model="captchaCode" placeholder="请输入验证码" class="luxury-input captcha-input" maxlength="4" autocomplete="off" />
+                <img v-if="captchaImage" :src="captchaImage" alt="验证码" class="captcha-img" @click="refreshCaptcha" title="点击刷新" />
+                <div v-else class="captcha-placeholder" @click="refreshCaptcha">加载中...</div>
+              </div>
+            </div>
             <button type="submit" class="luxury-btn mt-6" :disabled="loading">
               {{ loading ? '验证中...' : '登录' }}
             </button>
@@ -103,12 +112,13 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import request from '../utils/request';
+import { rsaEncrypt } from '../utils/rsa';
 
 const router = useRouter();
-const username = ref('sysadmin');
+const username = ref('');
 const password = ref('');
 const totpCode = ref('');
 const totpRequired = ref(false);
@@ -116,30 +126,53 @@ const loading = ref(false);
 const errorMessage = ref('');
 const successMessage = ref('');
 
+// Added: 验证码状态
+const captchaRequired = ref(false);
+const captchaId = ref('');
+const captchaCode = ref('');
+const captchaImage = ref('');
+
 // 改密状态
 const showChangePwd = ref(false);
 const changePwdReason = ref('');
 const oldPassword = ref('');
 const newPassword = ref('');
-const confirmPassword = ref('');  // Added: 二次确认
-// 改密时需要一个临时 token，先用密码正确登录拿到（密码过期场景下需先登录一次拿 token）
-const changePwdToken = ref('');
+const confirmPassword = ref('');
 
+// Added: 刷新验证码
+const refreshCaptcha = async () => {
+  try {
+    const res = await request.get('/auth/captcha');
+    captchaId.value = res.data.captcha_id;
+    captchaImage.value = res.data.image_base64;
+    captchaCode.value = '';
+  } catch (e) {
+    console.error('获取验证码失败', e);
+  }
+};
+
+// Added: 登录 — RSA 加密传输
 const handleLogin = async () => {
   if (!username.value || !password.value) return;
+  if (captchaRequired.value && !captchaCode.value) {
+    errorMessage.value = '请输入验证码。';
+    return;
+  }
   loading.value = true;
   errorMessage.value = '';
   
   try {
-    const params = new URLSearchParams();
-    params.append('username', username.value);
-    params.append('password', password.value);
-    if (totpCode.value) {
-      params.append('scope', totpCode.value);
-    }
+    // RSA 加密凭据
+    const encrypted = await rsaEncrypt({
+      username: username.value,
+      password: password.value,
+      totp_code: totpCode.value || undefined,
+    });
     
-    const res = await request.post('/auth/login', params, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    const res = await request.post('/auth/login', {
+      encrypted_payload: encrypted,
+      captcha_id: captchaId.value || '',
+      captcha_code: captchaCode.value || '',
     });
     
     localStorage.setItem('basalt_token', res.data.access_token);
@@ -154,13 +187,18 @@ const handleLogin = async () => {
         totpRequired.value = true;
         errorMessage.value = detail;
       } else if (headers['x-password-expired'] === 'true') {
-        // 密码过期，切换到改密表单
         showChangePwd.value = true;
         changePwdReason.value = detail;
         oldPassword.value = password.value;
         errorMessage.value = '';
       } else {
         errorMessage.value = detail;
+      }
+      
+      // Added: 后端要求验证码时自动显示
+      if (headers['x-captcha-required'] === 'true') {
+        captchaRequired.value = true;
+        refreshCaptcha();
       }
     } else {
       errorMessage.value = '无法连接服务器。';
@@ -170,9 +208,9 @@ const handleLogin = async () => {
   }
 };
 
+// Added: 改密 — RSA 加密传输
 const handleChangePassword = async () => {
   if (!oldPassword.value || !newPassword.value || !confirmPassword.value) return;
-  // Added: 前端二次确认校验
   if (newPassword.value !== confirmPassword.value) {
     errorMessage.value = '两次输入的新密码不一致，请重新输入。';
     return;
@@ -182,10 +220,14 @@ const handleChangePassword = async () => {
   successMessage.value = '';
 
   try {
-    const res = await request.post('/auth/reset-expired-password', {
+    const encrypted = await rsaEncrypt({
       username: username.value,
       old_password: oldPassword.value,
-      new_password: newPassword.value
+      new_password: newPassword.value,
+    });
+
+    const res = await request.post('/auth/reset-expired-password', {
+      encrypted_payload: encrypted,
     });
 
     successMessage.value = res.data.message || '密码修改成功，请使用新密码登录。';
@@ -200,6 +242,10 @@ const handleChangePassword = async () => {
     loading.value = false;
   }
 };
+
+onMounted(() => {
+  // 页面加载时不自动显示验证码，第一次登录失败后再显示
+});
 </script>
 
 <style scoped>
@@ -268,4 +314,41 @@ const handleChangePassword = async () => {
   font-size: 14px; cursor: pointer; transition: all 0.2s ease; text-align: center;
 }
 .secondary-btn:hover { background: var(--slate-700); }
+
+/* Added: 验证码样式 */
+.captcha-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.captcha-input {
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: 4px;
+  font-size: 18px;
+  font-family: monospace;
+}
+.captcha-img {
+  height: 44px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--slate-700);
+  transition: opacity 0.2s;
+}
+.captcha-img:hover {
+  opacity: 0.7;
+}
+.captcha-placeholder {
+  height: 44px;
+  width: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--slate-800);
+  border: 1px solid var(--slate-700);
+  border-radius: 6px;
+  color: var(--slate-500);
+  font-size: 12px;
+  cursor: pointer;
+}
 </style>

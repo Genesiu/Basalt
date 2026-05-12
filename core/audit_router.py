@@ -1,6 +1,6 @@
 import csv
 import io
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -34,7 +34,7 @@ def _log_to_dict(log: AuditLog) -> dict:
 @router.get("/")
 async def list_audit_logs(
     db: AsyncSession = Depends(get_db),
-    limit: int = 200
+    limit: int = Query(default=200, ge=1, le=10000, description="返回条数（1-10000）")
 ):
     """查询审计日志，按时间倒序返回"""
     stmt = select(AuditLog).order_by(desc(AuditLog.timestamp)).limit(limit)
@@ -60,7 +60,7 @@ async def get_audit_detail(
 @router.get("/export/csv", dependencies=[RequirePermission("audit:export")])
 async def export_audit_csv(
     db: AsyncSession = Depends(get_db),
-    limit: int = 10000
+    limit: int = Query(default=10000, ge=1, le=50000, description="导出条数上限")
 ):
     """
     导出审计日志为 CSV 文件。

@@ -1,6 +1,7 @@
 import os
 import base64
 import logging
+import traceback
 
 # ============================================================
 # 密钥持久化：首次启动自动生成 .env，后续重启自动加载（不再随机变化）
@@ -62,11 +63,19 @@ from core.role_router import router as role_router
 from core.compliance_router import router as compliance_router
 
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import JSONResponse
+
+# 生产模式下隐藏交互式文档（通过环境变量 PRODUCTION=true 启用）
+_is_production = os.environ.get("PRODUCTION", "").lower() in ("true", "1", "yes")
 
 app = FastAPI(
     title="Basalt Framework — AI-Native Security Microkernel",
     description="Build on Basalt. Secure by default. | by Genesiu",
-    version="2.0.0"
+    version="2.3.0",
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
 )
 
 # Modified: CORS 改为可配置白名单（等保 8.1.3a）
@@ -84,8 +93,43 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Password-Expired", "X-TOTP-Required"],
+    expose_headers=["X-Password-Expired", "X-TOTP-Required", "X-Captcha-Required"],
 )
+
+
+# ============================================================
+# 安全响应头中间件（等保 8.1.3 + OWASP 推荐）
+# ============================================================
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # API 响应禁止缓存（防止敏感数据被浏览器缓存）
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ============================================================
+# 全局异常处理器（隐藏堆栈跟踪，防止信息泄露）
+# ============================================================
+@app.exception_handler(Exception)
+async def global_exception_handler(request: StarletteRequest, exc: Exception):
+    """捕获所有未处理异常，生产环境不暴露堆栈信息"""
+    logging.error(f"[未捕获异常] {request.method} {request.url.path}: {type(exc).__name__}: {exc}")
+    if not _is_production:
+        logging.error(traceback.format_exc())
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "服务器内部错误，请联系管理员。"},
+    )
 
 app.include_router(auth_router, prefix="/api/v1/auth")
 app.include_router(config_router, prefix="/api/v1/config")
