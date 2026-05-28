@@ -47,6 +47,7 @@ def _load_or_create_env():
 
 _load_or_create_env()
 
+from contextlib import asynccontextmanager  # Added: [L-07] lifespan 上下文
 from fastapi import FastAPI
 from core.database import engine, Base, AsyncSessionLocal, is_sqlite, get_db_type
 from sqlalchemy.future import select
@@ -70,104 +71,78 @@ from starlette.responses import JSONResponse
 # 生产模式下隐藏交互式文档（通过环境变量 PRODUCTION=true 启用）
 _is_production = os.environ.get("PRODUCTION", "").lower() in ("true", "1", "yes")
 
-app = FastAPI(
-    title="Basalt Framework — AI-Native Security Microkernel",
-    description="Build on Basalt. Secure by default. | by Genesiu",
-    version="2.3.0",
-    docs_url=None if _is_production else "/docs",
-    redoc_url=None if _is_production else "/redoc",
-)
-
-# Modified: CORS 改为可配置白名单（等保 8.1.3a）
-# 生产环境应通过环境变量 CORS_ORIGINS 配置为逗号分隔的域名列表
-_cors_origins_raw = os.environ.get("CORS_ORIGINS", "*")
-if _cors_origins_raw == "*":
-    _cors_origins = ["*"]
-    logging.warning("[安全警告] CORS 允许所有来源（开发模式），生产环境请设置 CORS_ORIGINS 环境变量。")
-else:
-    _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["X-Password-Expired", "X-TOTP-Required", "X-Captcha-Required"],
-)
-
 
 # ============================================================
-# 安全响应头中间件（等保 8.1.3 + OWASP 推荐）
+# Modified: [L-07] 使用 lifespan 上下文管理器替代已废弃的 @app.on_event
 # ============================================================
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: StarletteRequest, call_next):
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-        # API 响应禁止缓存（防止敏感数据被浏览器缓存）
-        if request.url.path.startswith("/api/"):
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-        return response
 
-app.add_middleware(SecurityHeadersMiddleware)
+async def _setup_db_triggers(conn):
+    """根据数据库类型自动部署审计防删改触发器（等保 8.1.4.3c）"""
+    db_type = get_db_type()
 
+    if is_sqlite():
+        try:
+            await conn.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
+                BEFORE UPDATE ON audit_logs
+                BEGIN
+                    SELECT RAISE(ABORT, '等保安全策略：审计日志禁止修改');
+                END;
+            """))
+            await conn.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete
+                BEFORE DELETE ON audit_logs
+                BEGIN
+                    SELECT RAISE(ABORT, '等保安全策略：审计日志禁止删除');
+                END;
+            """))
+        except Exception as e:
+            logging.info(f"审计触发器已存在或创建异常: {e}")
 
-# ============================================================
-# 全局异常处理器（隐藏堆栈跟踪，防止信息泄露）
-# ============================================================
-@app.exception_handler(Exception)
-async def global_exception_handler(request: StarletteRequest, exc: Exception):
-    """捕获所有未处理异常，生产环境不暴露堆栈信息"""
-    logging.error(f"[未捕获异常] {request.method} {request.url.path}: {type(exc).__name__}: {exc}")
-    if not _is_production:
-        logging.error(traceback.format_exc())
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "服务器内部错误，请联系管理员。"},
-    )
-
-app.include_router(auth_router, prefix="/api/v1/auth")
-app.include_router(config_router, prefix="/api/v1/config")
-app.include_router(audit_router, prefix="/api/v1/audit")
-app.include_router(user_router, prefix="/api/v1/users")
-app.include_router(role_router, prefix="/api/v1/roles")
-app.include_router(compliance_router, prefix="/api/v1/compliance")
-app.include_router(example_router, prefix="/api/v1")
-
-@app.on_event("startup")
-async def on_startup():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-        # 等保 8.1.4.3c — 审计日志防删改触发器（按数据库类型条件执行）
-        if is_sqlite():
+    elif db_type == "mysql":
+        # Modified: MySQL 审计触发器自动部署（不再需要手动执行 SQL）
+        for trigger_name, op in [("audit_logs_no_update", "UPDATE"), ("audit_logs_no_delete", "DELETE")]:
             try:
-                await conn.execute(text("""
-                    CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
-                    BEFORE UPDATE ON audit_logs
+                await conn.execute(text(f"DROP TRIGGER IF EXISTS {trigger_name}"))
+                await conn.execute(text(f"""
+                    CREATE TRIGGER {trigger_name}
+                    BEFORE {op} ON audit_logs
+                    FOR EACH ROW
                     BEGIN
-                        SELECT RAISE(ABORT, '等保安全策略：审计日志禁止修改');
-                    END;
-                """))
-                await conn.execute(text("""
-                    CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete
-                    BEFORE DELETE ON audit_logs
-                    BEGIN
-                        SELECT RAISE(ABORT, '等保安全策略：审计日志禁止删除');
-                    END;
+                        SIGNAL SQLSTATE '45000'
+                        SET MESSAGE_TEXT = '等保安全策略：审计日志禁止修改或删除';
+                    END
                 """))
             except Exception as e:
-                logging.info(f"审计触发器已存在或创建异常: {e}")
-        else:
-            # PostgreSQL/MySQL: 需手动部署对应触发器，参见 docs/DEPLOY.md
-            logging.info(f"[{get_db_type()}] 非 SQLite 环境，请手动部署审计防删改触发器。")
-        
-    # 播种初创数据
+                logging.warning(f"MySQL 审计触发器 {trigger_name} 部署异常: {e}")
+        logging.info("[MySQL] 审计防删改触发器已自动部署。")
+
+    elif db_type == "postgresql":
+        # PostgreSQL 审计触发器自动部署
+        try:
+            await conn.execute(text("""
+                CREATE OR REPLACE FUNCTION audit_logs_protect() RETURNS TRIGGER AS $$
+                BEGIN
+                    RAISE EXCEPTION '等保安全策略：审计日志禁止修改或删除';
+                    RETURN NULL;
+                END;
+                $$ LANGUAGE plpgsql;
+            """))
+            for op in ["UPDATE", "DELETE"]:
+                trigger_name = f"audit_logs_no_{op.lower()}"
+                await conn.execute(text(f"DROP TRIGGER IF EXISTS {trigger_name} ON audit_logs"))
+                await conn.execute(text(f"""
+                    CREATE TRIGGER {trigger_name}
+                    BEFORE {op} ON audit_logs
+                    FOR EACH ROW EXECUTE FUNCTION audit_logs_protect();
+                """))
+        except Exception as e:
+            logging.warning(f"PostgreSQL 审计触发器部署异常: {e}")
+        logging.info("[PostgreSQL] 审计防删改触发器已自动部署。")
+
+
+async def _seed_initial_data():
+    """播种初创数据"""
     async with AsyncSessionLocal() as session:
         # 1. 初始化预置角色
         default_roles = [
@@ -179,37 +154,29 @@ async def on_startup():
         for role_data in default_roles:
             res = await session.execute(select(Role).where(Role.code == role_data["code"]))
             if not res.scalars().first():
-                r = Role(**role_data)
-                session.add(r)
-        
+                session.add(Role(**role_data))
         await session.commit()
 
-        # 2. 初始化核心管理员
-        # Modified: password_updated_at=None 触发首次登录强制改密（等保 8.1.4.2c）
-        default_pwd = "Admin!@#123"
-        hashed = Hasher.get_password_hash(default_pwd)
-        
+        # 2. 初始化核心管理员（随机密码 + 首次登录强制改密）
         sysadmin_res = await session.execute(select(User).where(User.username == "sysadmin"))
-        if not sysadmin_res.scalars().first():
-            new_sysadmin = User(
-                username="sysadmin",
-                hashed_password=hashed,
-                role_code="sysadmin",
-                password_updated_at=None  # Modified: 首次登录必须改密
-            )
-            session.add(new_sysadmin)
-            
         auditadmin_res = await session.execute(select(User).where(User.username == "auditadmin"))
-        if not auditadmin_res.scalars().first():
-            new_auditadmin = User(
-                username="auditadmin",
-                hashed_password=hashed,
-                role_code="auditadmin",
-                password_updated_at=None  # Modified: 首次登录必须改密
-            )
-            session.add(new_auditadmin)
+        need_init = not sysadmin_res.scalars().first() or not auditadmin_res.scalars().first()
 
-        await session.commit()
+        if need_init:
+            default_pwd = base64.b64encode(os.urandom(12)).decode()
+            logging.warning(f"[SECURITY NOTICE] 初始管理员密码: {default_pwd} — 请立即登录修改！")
+            hashed = Hasher.get_password_hash(default_pwd)
+
+            sysadmin_res2 = await session.execute(select(User).where(User.username == "sysadmin"))
+            if not sysadmin_res2.scalars().first():
+                session.add(User(username="sysadmin", hashed_password=hashed,
+                    role_code="sysadmin", password_updated_at=None))
+                
+            auditadmin_res2 = await session.execute(select(User).where(User.username == "auditadmin"))
+            if not auditadmin_res2.scalars().first():
+                session.add(User(username="auditadmin", hashed_password=hashed,
+                    role_code="auditadmin", password_updated_at=None))
+            await session.commit()
             
         # 3. 注入系统基线配置
         res_cfg = await session.execute(select(SystemConfig))
@@ -230,17 +197,125 @@ async def on_startup():
         # 4. 初始化默认 IP 白名单（避免首次部署被锁死）
         res_wl = await session.execute(select(IPWhitelist))
         if not res_wl.scalars().first():
-            default_whitelist = [
+            session.add_all([
                 IPWhitelist(ip_network="0.0.0.0/0", description="默认放行所有 IPv4（生产环境请收紧为管理网段）"),
                 IPWhitelist(ip_network="::/0", description="默认放行所有 IPv6（生产环境请收紧为管理网段）"),
-            ]
-            session.add_all(default_whitelist)
+            ])
             await session.commit()
             print("[SECURITY NOTICE] 已植入默认 IP 白名单 (0.0.0.0/0)，生产环境请在管理后台「安全策略」中收紧。")
 
-    # Added: 内置定时备份调度器（替代 crontab）
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Modified: [L-07] FastAPI lifespan 上下文管理器 — 替代已废弃的 @app.on_event"""
+    # ---- STARTUP ----
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        # Added: 自动迁移 — create_all 不会 ALTER 已存在的表，需手动补列
+        if is_sqlite():
+            try:
+                await conn.execute(text("SELECT prev_hash FROM audit_logs LIMIT 1"))
+            except Exception:
+                await conn.execute(text("ALTER TABLE audit_logs ADD COLUMN prev_hash VARCHAR(64) DEFAULT 'GENESIS'"))
+                logging.info("[迁移] 已为 audit_logs 表添加 prev_hash 列")
+        await _setup_db_triggers(conn)
+    
+    await _seed_initial_data()
+
+    # 启动定时任务调度器（备份 + LoginAttempt 清理）
     from core.scheduler import start_scheduler
     start_scheduler()
+
+    yield  # ---- 应用运行中 ----
+
+    # ---- SHUTDOWN ----
+    from core.scheduler import stop_scheduler
+    stop_scheduler()
+    logging.info("[Basalt] 系统正常关闭。")
+
+
+# ============================================================
+# FastAPI 实例（使用 lifespan 替代 on_event）
+# ============================================================
+app = FastAPI(
+    title="Basalt Framework — AI-Native Security Microkernel",
+    description="Build on Basalt. Secure by default. | by Genesiu",
+    version="2.4.0",
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    lifespan=lifespan,
+)
+
+# Modified: [M-01 安全修复] CORS 生产模式拒绝通配符
+_cors_origins_raw = os.environ.get("CORS_ORIGINS", "*")
+if _cors_origins_raw == "*":
+    if _is_production:
+        raise RuntimeError(
+            "致命错误：生产模式下 CORS_ORIGINS 不可为 '*'。"
+            "请在 .env 中设置 CORS_ORIGINS 为受信域名列表（逗号分隔）。"
+        )
+    _cors_origins = ["*"]
+    logging.warning("[安全警告] CORS 允许所有来源（开发模式），生产环境请设置 CORS_ORIGINS 环境变量。")
+else:
+    _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Password-Expired", "X-TOTP-Required", "X-Captcha-Required"],
+)
+
+# Added: 内存级速率限制中间件（登录/验证码接口防爆破第一道防线）
+from core.rate_limit import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware, rate_limit=20, window_seconds=60)
+
+
+# ============================================================
+# 安全响应头中间件（等保 8.1.3 + OWASP 推荐）
+# ============================================================
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        # Modified: [L-06] CSP 替代废弃的 X-XSS-Protection
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ============================================================
+# 全局异常处理 — 生产环境不泄露堆栈
+# ============================================================
+@app.exception_handler(Exception)
+async def global_exception_handler(request: StarletteRequest, exc: Exception):
+    logging.error(f"[全局异常] {request.method} {request.url}: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "内部服务错误，已记录。请联系管理员。"}
+    )
+
+
+# ============================================================
+# 路由注册
+# ============================================================
+app.include_router(auth_router, prefix="/api/v1/auth")
+app.include_router(config_router, prefix="/api/v1/config")
+app.include_router(audit_router, prefix="/api/v1/audit")
+app.include_router(user_router, prefix="/api/v1/users")
+app.include_router(role_router, prefix="/api/v1/roles")
+app.include_router(compliance_router, prefix="/api/v1/compliance")
+app.include_router(example_router, prefix="/api/v1")
+
 
 @app.get("/health")
 def health_check():

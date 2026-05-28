@@ -1,5 +1,9 @@
 #!/bin/bash
 # ============================================================
+# ⚠️ DEPRECATED — 此脚本已被内置 APScheduler 调度器取代
+# 新备份系统支持 SQLite/MySQL/PostgreSQL，通过 WebUI 或 API 管理。
+# 仅在无法启动 Python 后端时作为应急手段使用。
+# ============================================================
 # Basalt Framework 等保三级数据备份脚本（8.1.4.9a）
 # 建议通过 crontab 定时执行：
 #   0 2 * * * /path/to/safem/backup.sh >> /var/log/basalt_backup.log 2>&1

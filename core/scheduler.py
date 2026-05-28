@@ -11,11 +11,16 @@ import hashlib
 import shutil
 import logging
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
-from core.database import is_sqlite, DATABASE_URL
+from core.database import is_sqlite, DATABASE_URL, AsyncSessionLocal
 
 logger = logging.getLogger("basalt.scheduler")
+
+# Modified: [L-02] 使用绝对路径查找外部工具
+_SQLITE3_PATH = shutil.which("sqlite3") or "sqlite3"
+_PGDUMP_PATH = shutil.which("pg_dump") or "pg_dump"
+_MYSQLDUMP_PATH = shutil.which("mysqldump") or "mysqldump"
 
 # 备份配置（可通过 .env 覆盖，也可通过 API 动态修改）
 BACKUP_DIR = os.environ.get("BACKUP_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backups"))
@@ -48,13 +53,15 @@ def _run_backup() -> dict:
             gz_file = dump_file + ".gz"
 
             try:
+                # Modified: [L-02] 使用绝对路径
                 result = subprocess.run(
-                    ["sqlite3", db_path, ".dump"],
+                    [_SQLITE3_PATH, db_path, ".dump"],
                     capture_output=True, text=True, timeout=60
                 )
                 with open(dump_file, "w") as f:
                     f.write(result.stdout)
-            except (FileNotFoundError, subprocess.TimeoutExpired):
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                logger.warning(f"[备份] sqlite3 工具不可用，回退到文件拷贝: {e}")
                 shutil.copy2(db_path, dump_file.replace(".sql", ".db"))
                 dump_file = dump_file.replace(".sql", ".db")
                 gz_file = dump_file + ".gz"
@@ -67,8 +74,9 @@ def _run_backup() -> dict:
                 parsed = urlparse(DATABASE_URL.replace("+asyncpg", ""))
                 env = os.environ.copy()
                 env["PGPASSWORD"] = parsed.password or ""
+                # Modified: [L-02] 使用绝对路径
                 subprocess.run([
-                    "pg_dump",
+                    _PGDUMP_PATH,
                     "-h", parsed.hostname or "localhost",
                     "-p", str(parsed.port or 5432),
                     "-U", parsed.username or "postgres",
@@ -85,14 +93,17 @@ def _run_backup() -> dict:
             try:
                 from urllib.parse import urlparse
                 parsed = urlparse(DATABASE_URL.replace("+aiomysql", ""))
-                subprocess.run([
-                    "mysqldump",
-                    "-h", parsed.hostname or "localhost",
-                    "-P", str(parsed.port or 3306),
-                    "-u", parsed.username or "root",
-                    f"-p{parsed.password or ''}",
-                    parsed.path.lstrip("/")
-                ], stdout=open(dump_file, "w"), timeout=300, check=True)
+                # Modified: [L-02] 使用绝对路径 + [L-03] with 管理文件句柄
+                with open(dump_file, "w") as dump_fh:
+                    subprocess.run([
+                        _MYSQLDUMP_PATH,
+                        "-h", parsed.hostname or "localhost",
+                        "-P", str(parsed.port or 3306),
+                        "-u", parsed.username or "root",
+                        f"-p{parsed.password or ''}",
+                        "--single-transaction",  # Added: MySQL InnoDB 一致性快照
+                        parsed.path.lstrip("/")
+                    ], stdout=dump_fh, timeout=300, check=True)
             except Exception as e:
                 logger.error(f"[备份] MySQL dump 失败: {e}")
                 return {"status": "failed", "error": str(e)}
@@ -147,6 +158,44 @@ def _cleanup_old_backups():
             logger.info(f"[备份清理] 已删除: {fname}")
 
 
+# Modified: [M-06] LoginAttempt 定时清理（兼容 SQLite/MySQL/PostgreSQL）
+def _cleanup_login_attempts():
+    """清理 N 天前的登录尝试记录，防止表无限膨胀"""
+    import asyncio
+    from sqlalchemy import text as sa_text
+    
+    async def _do_cleanup():
+        keep_days = int(os.environ.get("LOGIN_ATTEMPT_KEEP_DAYS", "30"))
+        try:
+            async with AsyncSessionLocal() as session:
+                if is_sqlite():
+                    await session.execute(sa_text(
+                        f"DELETE FROM login_attempts WHERE attempt_time < datetime('now', '-{keep_days} days')"
+                    ))
+                elif "mysql" in DATABASE_URL:
+                    await session.execute(sa_text(
+                        f"DELETE FROM login_attempts WHERE attempt_time < NOW() - INTERVAL {keep_days} DAY"
+                    ))
+                else:
+                    await session.execute(sa_text(
+                        f"DELETE FROM login_attempts WHERE attempt_time < NOW() - INTERVAL '{keep_days} days'"
+                    ))
+                await session.commit()
+            logger.info(f"[清理] 已清理 {keep_days} 天前的登录尝试记录")
+        except Exception as e:
+            logger.error(f"[清理] LoginAttempt 清理失败: {e}")
+
+    # 在新事件循环中运行异步任务
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.ensure_future(_do_cleanup())
+        else:
+            loop.run_until_complete(_do_cleanup())
+    except RuntimeError:
+        asyncio.run(_do_cleanup())
+
+
 def start_scheduler():
     """启动内置调度器"""
     global _scheduler, _config
@@ -173,6 +222,16 @@ def start_scheduler():
             name="Basalt 自动数据库备份",
             misfire_grace_time=3600
         )
+
+    # Added: [M-06] 每 6 小时清理过期的 LoginAttempt 记录
+    _scheduler.add_job(
+        _cleanup_login_attempts,
+        trigger="interval",
+        hours=6,
+        id="basalt_login_cleanup",
+        name="LoginAttempt 过期记录清理",
+        misfire_grace_time=3600
+    )
     
     _scheduler.start()
     status = "已启用" if _config["enabled"] else "已关闭"
@@ -181,6 +240,16 @@ def start_scheduler():
         f"每日 {_config['cron_hour']:02d}:{_config['cron_minute']:02d}，"
         f"保留 {_config['keep_days']} 天，路径 {_config['backup_dir']}"
     )
+    logger.info("[调度器] LoginAttempt 清理任务已启用（每 6 小时）")
+
+
+def stop_scheduler():
+    """Added: 优雅停止调度器（供 lifespan shutdown 调用）"""
+    global _scheduler
+    if _scheduler:
+        _scheduler.shutdown(wait=False)
+        logger.info("[调度器] 已停止。")
+        _scheduler = None
 
 
 def get_scheduler_status() -> dict:
@@ -227,7 +296,13 @@ def update_scheduler_config(
     if cron_minute is not None:
         _config["cron_minute"] = cron_minute
     if backup_dir is not None:
-        _config["backup_dir"] = backup_dir
+        # Modified: [M-05 安全修复] 备份路径穿越防护
+        _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        abs_backup = os.path.abspath(backup_dir)
+        if not abs_backup.startswith(_project_root):
+            logger.warning(f"[安全] 备份路径越界被拦截: {backup_dir} → {abs_backup}")
+            return {"message": "错误：备份路径不能超出项目根目录", "error": True}
+        _config["backup_dir"] = abs_backup
     if keep_days is not None:
         _config["keep_days"] = keep_days
 
@@ -235,8 +310,8 @@ def update_scheduler_config(
     if _scheduler:
         try:
             _scheduler.remove_job("basalt_auto_backup")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"移除旧备份任务时异常（可忽略）: {e}")  # Modified: [L-03] 不再静默吞异常
         
         if _config["enabled"]:
             _scheduler.add_job(

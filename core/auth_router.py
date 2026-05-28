@@ -4,8 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, desc
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Tuple
 import json
+import time
 import logging
 
 from core.database import get_db
@@ -156,10 +157,11 @@ async def login_for_access_token(
     # 取 IP 和账号两个维度的较大值
     fail_count = max(ip_fail_count, username_fail_count)
     
-    # 有过失败记录时强制验证码（第一次登录不需要）
-    if fail_count >= 1 and captcha_id:
-        if not verify_captcha(captcha_id, captcha_code):
-            raise HTTPException(status_code=400, detail="验证码错误或已过期，请重新输入。",
+    # Modified: [H-02 安全修复] 有过失败记录时强制验证码，不传 captcha_id 也必须拦截
+    if fail_count >= 1:
+        if not captcha_id or not verify_captcha(captcha_id, captcha_code):
+            raise HTTPException(status_code=400,
+                detail="需要验证码。请完成验证码校验后重试。",
                 headers={"X-Captcha-Required": "true"})
 
     # --- 1. 防爆破（IP + 账号双维度） ---
@@ -264,6 +266,9 @@ async def change_password(
     current_user.hashed_password = Hasher.get_password_hash(body.new_password)
     current_user.password_updated_at = datetime.utcnow()
     await db.commit()
+    # Added: [SEC-01] 改密后立即吊销旧 Token
+    from core.auth import revoke_user_tokens
+    revoke_user_tokens(current_user.username)
     await create_audit_log(db=db, request=request, action="CHANGE_PASSWORD", status="SUCCESS",
         details={}, current_user_id=current_user.username)
     return {"message": "密码修改成功，请使用新密码重新登录。"}
@@ -295,12 +300,19 @@ async def reset_expired_password(
     user.hashed_password = Hasher.get_password_hash(new_password)
     user.password_updated_at = datetime.utcnow()
     await db.commit()
+    # Added: [SEC-01] 改密后立即吊销旧 Token
+    from core.auth import revoke_user_tokens
+    revoke_user_tokens(user.username)
     await create_audit_log(db=db, request=request, action="RESET_EXPIRED_PASSWORD", status="SUCCESS",
         details={}, current_user_id=user.username)
     return {"message": "密码修改成功，请使用新密码登录。"}
 
 
 # ---------- TOTP ----------
+
+# Modified: [C-02 安全修复] 服务端临时缓存待绑定的 TOTP secret，防止客户端注入
+_pending_totp: dict[int, Tuple[str, float]] = {}  # {user_id: (secret, expire_ts)}
+_TOTP_SETUP_EXPIRE = 300  # 5 分钟有效期
 
 @router.post("/totp/setup")
 async def setup_totp(
@@ -310,19 +322,19 @@ async def setup_totp(
 ):
     """
     第一步：生成 TOTP 密钥和 QR 码 URI。
-    此时 secret 不写入数据库，需用户通过 /totp/verify 验证后才正式绑定。
+    secret 存储在服务端内存中，用户通过 /totp/verify 验证后才正式绑定。
     """
     if current_user.totp_secret:
         raise HTTPException(status_code=400, detail="该账号已绑定双因子认证，如需重置请联系安全管理员。")
     secret = TOTPManager.generate_secret()
+    _pending_totp[current_user.id] = (secret, time.time() + _TOTP_SETUP_EXPIRE)
     uri = TOTPManager.get_provisioning_uri(secret, current_user.username)
     return TOTPSetupResponse(secret=secret, provisioning_uri=uri,
         message="请使用 Authenticator 应用扫描二维码，然后输入 6 位验证码完成绑定。")
 
 
 class TOTPVerifyRequest(BaseModel):
-    secret: str
-    code: str
+    code: str  # Modified: [C-02] 移除 secret 字段，仅需验证码
 
 
 @router.post("/totp/verify")
@@ -334,17 +346,25 @@ async def verify_and_bind_totp(
 ):
     """
     第二步：用户输入 Authenticator 上的 6 位验证码。
-    验证通过后才将 secret 写入数据库，完成正式绑定。
+    Modified: [C-02] secret 从服务端缓存取出，而非客户端传入。
     """
     if current_user.totp_secret:
         raise HTTPException(status_code=400, detail="该账号已绑定双因子认证。")
     
-    if not TOTPManager.verify_totp(body.secret, body.code):
+    # Modified: [C-02] 从服务端临时缓存获取 secret
+    pending = _pending_totp.pop(current_user.id, None)
+    if not pending or time.time() > pending[1]:
+        raise HTTPException(status_code=400, detail="TOTP 绑定会话已过期或不存在，请重新发起 /totp/setup。")
+    server_secret = pending[0]
+    
+    if not TOTPManager.verify_totp(server_secret, body.code):
+        # 验证失败后重新放回缓存（允许用户重试，但不延长过期时间）
+        _pending_totp[current_user.id] = pending
         await create_audit_log(db=db, request=request, action="TOTP_VERIFY_FAILED", status="FAILED",
             details={"reason": "验证码错误"}, current_user_id=current_user.username)
         raise HTTPException(status_code=400, detail="验证码错误，请检查 Authenticator 上的当前代码后重试。")
     
-    current_user.totp_secret = body.secret
+    current_user.totp_secret = server_secret  # Modified: [C-02] 使用服务端的 secret
     await db.commit()
     await create_audit_log(db=db, request=request, action="TOTP_BIND", status="SUCCESS",
         details={}, current_user_id=current_user.username)
@@ -357,6 +377,12 @@ async def cancel_totp_setup(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # Modified: [H-03 安全修复] 管理员角色不可自行取消 TOTP
+    if current_user.role_code in ADMIN_ROLES_REQUIRE_TOTP and current_user.totp_secret:
+        raise HTTPException(status_code=403,
+            detail="管理员角色的双因子认证不可自行取消，请联系安全管理员重置。")
+    # 清除待绑定缓存（如果有的话）
+    _pending_totp.pop(current_user.id, None)
     current_user.totp_secret = None
     await db.commit()
     await create_audit_log(db=db, request=request, action="TOTP_BIND_CANCELLED", status="SUCCESS",

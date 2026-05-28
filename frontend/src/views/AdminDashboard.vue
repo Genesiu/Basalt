@@ -756,7 +756,7 @@ const confirmTotpBind = async () => {
   totpMsg.value = '';
   try {
     const res = await request.post('/auth/totp/verify', {
-      secret: totpSecret.value,
+      // Modified: [C-02 前端适配] secret 不再提交，由服务端缓存提供
       code: totpVerifyCode.value
     });
     totpMsg.value = '✓ ' + res.data.message; totpMsgType.value = 'ok';

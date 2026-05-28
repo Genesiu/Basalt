@@ -81,9 +81,15 @@ async def update_role(
     target_role = res.scalars().first()
     if not target_role:
         raise HTTPException(status_code=404, detail="未找到该角色")
-        
-    if target_role.code in ["sysadmin", "auditadmin"] and body.code != target_role.code:
-        raise HTTPException(status_code=403, detail="系统预置管理员代号禁止篡改。")
+    
+    # Modified: [SEC-04] 预置角色代码、权限、安全等级均不可篡改
+    if target_role.code in ["sysadmin", "auditadmin"]:
+        if body.code != target_role.code:
+            raise HTTPException(status_code=403, detail="系统预置管理员代号禁止篡改。")
+        if body.permissions != target_role.permissions:
+            raise HTTPException(status_code=403, detail="系统预置管理员权限禁止修改，请通过数据库直接操作。")
+        if body.max_clearance != target_role.max_clearance:
+            raise HTTPException(status_code=403, detail="系统预置管理员安全等级禁止修改。")
         
     old_perms = target_role.permissions
     old_clearance = target_role.max_clearance

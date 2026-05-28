@@ -2,7 +2,8 @@ import axios from 'axios';
 import router from '../router';
 
 const request = axios.create({
-  baseURL: 'http://127.0.0.1:8000/api/v1',
+  // Modified: [L-04 安全修复] 使用相对路径，由 Vite proxy 或生产环境反向代理处理
+  baseURL: '/api/v1',
   timeout: 10000
 });
 
@@ -19,6 +20,11 @@ request.interceptors.request.use(config => {
 request.interceptors.response.use(
   response => response,
   error => {
+    // Modified: 401 时自动跳转登录页（会话过期/Token 无效）
+    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
+      localStorage.removeItem('basalt_token');
+      router.push('/login');
+    }
     return Promise.reject(error);
   }
 );

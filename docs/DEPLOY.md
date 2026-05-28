@@ -24,6 +24,9 @@ pip install -r requirements.txt
 
 # 3. 首次启动（自动生成 .env 和数据库）
 uvicorn main:app --host 127.0.0.1 --port 8000
+# ⚠️ 首次启动时，初始管理员密码会随机生成并打印在启动日志中：
+#    [SECURITY NOTICE] 初始管理员密码: xxxxxxxx — 请立即登录修改！
+# 请务必记录该密码，登录后系统会强制要求修改。
 # 启动后按 Ctrl+C 停止
 ```
 
@@ -39,6 +42,10 @@ JWT_SECRET_KEY=xxxxx
 ```bash
 # 编辑 .env，添加：
 CORS_ORIGINS=https://app.example.com,https://admin.example.com
+
+# 反向代理信任配置（使用 Nginx 时必须配置，否则 IP 白名单和防爆破以代理 IP 计算）
+# 填写 Nginx 所在服务器的 IP 网段，多个用逗号分隔
+TRUSTED_PROXY_CIDRS=127.0.0.1/32
 
 # 如需切换数据库（默认 SQLite）：
 # DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/basalt
@@ -62,7 +69,7 @@ After=network.target
 Type=simple
 User=www-data
 WorkingDirectory=/opt/basalt
-ExecStart=/opt/basalt/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 2
+ExecStart=/opt/basalt/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1 --loop uvloop
 Restart=always
 RestartSec=5
 
@@ -115,37 +122,58 @@ server {
 }
 ```
 
-### 2.5 备份管理
+### 2.5 备份与自动清理
 
 Basalt 内置 APScheduler 调度器，**无需配置系统 crontab**。
 
-- **WebUI 控制**：登录管理后台 → 菜单「备份管理」→ 开关/时间/路径/保留天数
-- **API 控制**：`PUT /api/v1/compliance/backup/config`
-- **手动触发**：`POST /api/v1/compliance/backup/trigger`
-- **默认参数**：每天 2:00 自动备份，保留 30 天
-- **备份内容**：Gzip 压缩 + SHA-256 完整性校验码
+- **备份**：每天 2:00 自动 Gzip 压缩 + SHA-256 校验
+- **LoginAttempt 清理**：每 6 小时自动清理过期记录（默认 30 天，`LOGIN_ATTEMPT_KEEP_DAYS` 可调）
+- **MySQL 备份**：使用 `mysqldump --single-transaction` 保证 InnoDB 一致性
 
-> ⚠️ PostgreSQL/MySQL 环境下，备份使用 `pg_dump` / `mysqldump`，请确保相应工具已安装。
+### 2.6 MySQL 部署
+
+```bash
+# 1. 创建数据库
+mysql -u root -p -e "
+CREATE DATABASE basalt CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'basalt'@'%' IDENTIFIED BY '强密码';
+GRANT ALL PRIVILEGES ON basalt.* TO 'basalt'@'%';
+FLUSH PRIVILEGES;"
+
+# 2. 修改 .env
+# DATABASE_URL=mysql+aiomysql://basalt:强密码@localhost:3306/basalt
+
+# 3. 启动 — 以下全部自动完成：
+#    ✅ 建表（ORM 自动迁移）
+#    ✅ 审计防删改触发器（SIGNAL SQLSTATE '45000'）
+#    ✅ 定时备份 + LoginAttempt 清理
+```
 
 ## 三、安全加固清单
 
-部署后逐项确认：
-
-- [ ] `.env` 文件权限为 `600`
-- [ ] `CORS_ORIGINS` 已配置为受信域名
-- [ ] Nginx TLS 已启用
-- [ ] IP 白名单已添加管理网段
-- [ ] 默认管理员密码已在首次登录时修改
-- [ ] 管理员已绑定 TOTP 双因子认证
-- [ ] 备份已在「备份管理」面板中确认开启
-- [ ] 防火墙仅开放 80/443 端口
-- [ ] PostgreSQL/MySQL 环境下已手动部署审计防删改触发器
+- [ ] `.env` 权限 `600`，`PRODUCTION=true`
+- [ ] `CORS_ORIGINS` 为受信域名（生产模式下 `*` 会阻止启动）
+- [ ] `TRUSTED_PROXY_CIDRS` 配置为 Nginx 网段
+- [ ] 从启动日志获取随机初始密码并修改
+- [ ] 管理员已绑定 TOTP（不可自行取消）
+- [ ] IP 白名单收紧（默认 `0.0.0.0/0`）
+- [ ] 防火墙仅开放 80/443
 
 ## 四、前端部署
 
 ```bash
-cd /opt/basalt-frontend
-npm install
-npm run build
-# 产物在 dist/ 目录，由 Nginx 托管
+cd /opt/basalt-frontend && npm install && npm run build
+# dist/ 目录由 Nginx 托管
 ```
+
+## 五、环境变量参考
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `DATABASE_URL` | 数据库连接串 | `sqlite+aiosqlite:///./basalt.db` |
+| `CORS_ORIGINS` | CORS 域名白名单 | `*`（生产禁止） |
+| `TRUSTED_PROXY_CIDRS` | 可信代理网段 | 空 |
+| `PRODUCTION` | 生产模式 | `false` |
+| `LOGIN_ATTEMPT_KEEP_DAYS` | 登录记录保留天数 | `30` |
+| `BACKUP_CRON_HOUR` | 备份执行小时 | `2` |
+| `BACKUP_KEEP_DAYS` | 备份保留天数 | `30` |

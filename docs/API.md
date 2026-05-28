@@ -45,7 +45,7 @@
 ```json
 {
   "username": "sysadmin",
-  "old_password": "Admin!@#123",
+  "old_password": "<启动日志中打印的随机初始密码>",
   "new_password": "NewSecure@2026"
 }
 ```
@@ -85,14 +85,15 @@
 
 ### POST `/auth/totp/verify` 🔒
 
-第二步：验证用户输入的 6 位 TOTP 码。验证通过后才将 secret 写入数据库，正式完成绑定。
+第二步：验证用户输入的 6 位 TOTP 码。服务端从内存缓存取出 setup 阶段生成的 secret 进行验证，通过后写入数据库完成绑定。
 
 ```json
 {
-  "secret": "JBSWY3DPEHPK3PXP",
   "code": "123456"
 }
 ```
+
+> ⚠️ **安全变更**：`secret` 字段已移除，不再由客户端传入。服务端在 `/totp/setup` 时临时缓存 secret（5 分钟有效），verify 时自动关联。
 
 **响应**：
 ```json
@@ -104,6 +105,8 @@
 ### DELETE `/auth/totp/cancel` 🔒
 
 取消已绑定的 TOTP（清除数据库中的 secret）。
+
+> ⚠️ **权限限制**：管理员角色（`sysadmin`、`auditadmin`）不可自行取消 TOTP 绑定，需由安全管理员重置。
 
 ---
 

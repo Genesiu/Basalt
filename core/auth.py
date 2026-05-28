@@ -1,4 +1,6 @@
 import os
+import time
+import threading
 from typing import Optional
 from datetime import datetime, timedelta
 import jwt
@@ -10,7 +12,13 @@ from core.database import get_db
 from models.system import User, Role
 
 # 满足 RFC 7518 标准，至少 32 字节
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "basalt-framework-dev-fallback-secret-key-32bytes") 
+# Modified: [C-01 安全修复] 移除硬编码 fallback 密钥，强制要求环境变量配置
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError(
+        "致命错误：JWT_SECRET_KEY 未配置，系统拒绝启动。"
+        "请检查 .env 文件是否存在且包含 JWT_SECRET_KEY 条目。"
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30 # 等保要求强制会话闲置越界超时限制（30分钟）
 
@@ -29,6 +37,30 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode.update({"exp": expire, "iat": now})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+# ============================================================
+# Added: JWT 黑名单（内存级 Token 吊销机制）
+# ============================================================
+_token_blacklist: dict[str, float] = {}  # {username: revoke_timestamp}
+_blacklist_lock = threading.Lock()
+
+def revoke_user_tokens(username: str):
+    """将指定用户的所有已颁发 Token 标记为失效（停用/改密/锁定时调用）"""
+    with _blacklist_lock:
+        _token_blacklist[username] = time.time()
+        # 清理超过 TOKEN 有效期的旧条目（防止内存泄漏）
+        cutoff = time.time() - (ACCESS_TOKEN_EXPIRE_MINUTES * 60 * 2)
+        expired = [k for k, v in _token_blacklist.items() if v < cutoff]
+        for k in expired:
+            del _token_blacklist[k]
+
+def _is_token_revoked(username: str, iat: int) -> bool:
+    """检查 Token 是否已被吊销（iat 早于吊销时间戳则视为失效）"""
+    revoke_ts = _token_blacklist.get(username)
+    if revoke_ts and iat < revoke_ts:
+        return True
+    return False
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)) -> User:
     """核心防线：验证 token 并提取当前实体，检查封锁/过期状态"""
@@ -50,6 +82,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
     user = result.scalars().first()
     
     if user is None or not user.is_active:
+        raise credentials_exception
+
+    # Added: [JWT 黑名单] 检查 Token 是否已被主动吊销
+    if _is_token_revoked(username, iat):
         raise credentials_exception
 
     # [防线一：防改密后旧 Token 挤占]

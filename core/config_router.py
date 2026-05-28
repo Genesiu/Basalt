@@ -36,6 +36,17 @@ async def update_configs(
     admin_user: User = Depends(get_current_user)
 ):
     """有权限的管理员可修改等保基线参数，操作写入审计日志"""
+    # Added: [SEC-03] 仅允许修改已知的配置键
+    ALLOWED_KEYS = {
+        "LOGIN_MAX_FAILURES", "LOGIN_LOCKOUT_MINUTES", "PWD_COMPLEXITY_ENFORCE",
+        "SESSION_TIMEOUT_MINS", "PWD_MAX_AGE_DAYS", "PWD_HISTORY_COUNT",
+        "INACTIVE_DAYS_LIMIT",
+    }
+    invalid_keys = set(payload.keys()) - ALLOWED_KEYS
+    if invalid_keys:
+        raise HTTPException(status_code=400,
+            detail=f"不允许修改或新增以下配置键: {', '.join(invalid_keys)}")
+
     changed = {}
     for k, v in payload.items():
         result = await db.execute(select(SystemConfig).where(SystemConfig.key == k))
@@ -45,10 +56,6 @@ async def update_configs(
             config_obj.value = str(v)
             db.add(config_obj)
             changed[k] = {"old": old_val, "new": str(v)}
-        else:
-            new_conf = SystemConfig(key=k, value=str(v))
-            db.add(new_conf)
-            changed[k] = {"old": None, "new": str(v)}
     await db.commit()
 
     # Modified: 同步审计写入
@@ -87,6 +94,13 @@ async def add_whitelist(
     admin_user: User = Depends(get_current_user)
 ):
     """添加 IP 白名单规则"""
+    # Added: [SEC-02] 校验 CIDR 格式合法性
+    import ipaddress
+    try:
+        ipaddress.ip_network(body.ip_network, strict=False)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"无效的 IP/CIDR 格式: {body.ip_network} ({e})")
+
     entry = IPWhitelist(ip_network=body.ip_network, description=body.description)
     db.add(entry)
     await db.commit()

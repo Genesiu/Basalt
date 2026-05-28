@@ -97,6 +97,9 @@ async def update_my_profile(
         current_user.hashed_password = Hasher.get_password_hash(body.new_password)
         current_user.password_updated_at = datetime.utcnow()
         await db.commit()
+        # Added: [SEC-01] 改密后立即吊销旧 Token
+        from core.auth import revoke_user_tokens
+        revoke_user_tokens(current_user.username)
         await create_audit_log(db=db, request=request, action="CHANGE_PASSWORD_SELF", status="SUCCESS",
             details={}, current_user_id=current_user.username)
         return {"message": "密码修改成功，请重新登录。"}
@@ -180,6 +183,10 @@ async def disable_user(
     target.encrypted_phone = None
     target.password_updated_at = datetime.utcnow()
     await db.commit()
+    # Added: 立即吊销该用户所有已颁发的 JWT Token
+    from core.auth import revoke_user_tokens
+    revoke_user_tokens(target.username)
     await create_audit_log(db=db, request=request, action="DISABLE_USER", status="SUCCESS",
-        details={"target_user": target.username, "data_erased": True}, current_user_id=admin_user.username)
-    return {"message": f"用户 '{target.username}' 已停用，敏感数据已擦除。"}
+        details={"target_user": target.username, "data_erased": True, "tokens_revoked": True},
+        current_user_id=admin_user.username)
+    return {"message": f"用户 '{target.username}' 已停用，敏感数据已擦除，会话令牌已吊销。"}

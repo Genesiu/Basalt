@@ -1,5 +1,6 @@
 import base64
 import os
+import threading
 import bcrypt
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
@@ -16,6 +17,7 @@ class RSACipher:
     - 使用 OAEP + SHA-256 填充，抗选择密文攻击
     """
     _instance = None
+    _lock = threading.Lock()  # Added: [M-03 安全修复] 线程安全锁
     
     def __init__(self):
         # 尝试从环境变量加载持久化私钥，否则生成临时密钥对
@@ -32,9 +34,11 @@ class RSACipher:
     
     @classmethod
     def get_instance(cls):
-        """单例模式，确保整个应用生命周期使用同一密钥对"""
+        """单例模式（双重检查锁定），确保整个应用生命周期使用同一密钥对"""
         if cls._instance is None:
-            cls._instance = cls()
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
         return cls._instance
     
     def get_public_key_pem(self) -> str:
@@ -47,13 +51,10 @@ class RSACipher:
     def decrypt(self, encrypted_b64: str) -> str:
         """用私钥解密前端 RSA 加密的 Base64 密文"""
         encrypted_bytes = base64.b64decode(encrypted_b64)
+        # Modified: JSEncrypt 前端库使用 PKCS1v1.5 padding，必须匹配
         plain_bytes = self._private_key.decrypt(
             encrypted_bytes,
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None
-            )
+            padding.PKCS1v15()
         )
         return plain_bytes.decode('utf-8')
 
@@ -71,12 +72,15 @@ class Hasher:
     
     # 缓存 AESCipher 实例（延迟初始化）
     _cipher = None
+    _cipher_lock = threading.Lock()  # Added: [QUAL-04] 线程安全锁
     
     @classmethod
     def _get_cipher(cls):
         """延迟初始化 AES 加密器，避免模块加载阶段 .env 尚未就绪"""
         if cls._cipher is None:
-            cls._cipher = AESCipher()
+            with cls._cipher_lock:
+                if cls._cipher is None:
+                    cls._cipher = AESCipher()
         return cls._cipher
     
     @staticmethod

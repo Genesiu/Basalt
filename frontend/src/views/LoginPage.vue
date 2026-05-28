@@ -39,11 +39,11 @@
           <form @submit.prevent="handleLogin" class="form-body">
             <div class="input-group">
               <label class="input-label">账号</label>
-              <input type="text" v-model="username" placeholder="请输入用户名" class="luxury-input" required />
+              <input type="text" v-model="username" placeholder="请输入用户名" class="luxury-input" required autocomplete="off" />
             </div>
             <div class="input-group">
               <label class="input-label">密码</label>
-              <input type="password" v-model="password" placeholder="请输入密码" class="luxury-input" required />
+              <input type="password" v-model="password" placeholder="请输入密码" class="luxury-input" required autocomplete="new-password" />
             </div>
             <div class="input-group" v-if="totpRequired">
               <label class="input-label">动态验证码 (TOTP)</label>

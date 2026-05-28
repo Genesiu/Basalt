@@ -27,7 +27,8 @@ def _log_to_dict(log: AuditLog) -> dict:
         "action": log.action,
         "resource": log.resource,
         "status": log.status,
-        "details": log.details or ""
+        "details": log.details or "",
+        "prev_hash": log.prev_hash or "",  # Added: 链式哈希字段
     }
 
 
@@ -43,19 +44,7 @@ async def list_audit_logs(
     return [_log_to_dict(log) for log in logs]
 
 
-@router.get("/{log_id}")
-async def get_audit_detail(
-    log_id: int,
-    db: AsyncSession = Depends(get_db)
-):
-    """查看单条审计日志完整详情"""
-    result = await db.execute(select(AuditLog).where(AuditLog.id == log_id))
-    log = result.scalars().first()
-    if not log:
-        raise HTTPException(status_code=404, detail="审计记录不存在。")
-    return _log_to_dict(log)
-
-
+# Modified: [SEC-05] /export/csv 必须在 /{log_id} 之前注册，否则 "export" 会匹配 {log_id}
 # Added: 等保 8.1.5d — 审计日志 CSV 导出（审计管理员职能）
 @router.get("/export/csv", dependencies=[RequirePermission("audit:export")])
 async def export_audit_csv(
@@ -74,7 +63,7 @@ async def export_audit_csv(
     # 写入 BOM 以确保 Excel 正确识别 UTF-8
     output.write('\ufeff')
     writer = csv.writer(output)
-    writer.writerow(["ID", "时间", "操作人", "来源IP", "动作", "资源", "状态", "详情"])
+    writer.writerow(["ID", "时间", "操作人", "来源IP", "动作", "资源", "状态", "详情", "前序哈希"])
 
     for log in logs:
         writer.writerow([
@@ -85,7 +74,8 @@ async def export_audit_csv(
             log.action,
             log.resource,
             log.status,
-            log.details or ""
+            log.details or "",
+            log.prev_hash or ""
         ])
 
     output.seek(0)
@@ -97,3 +87,16 @@ async def export_audit_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+@router.get("/{log_id}")
+async def get_audit_detail(
+    log_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """查看单条审计日志完整详情"""
+    result = await db.execute(select(AuditLog).where(AuditLog.id == log_id))
+    log = result.scalars().first()
+    if not log:
+        raise HTTPException(status_code=404, detail="审计记录不存在。")
+    return _log_to_dict(log)

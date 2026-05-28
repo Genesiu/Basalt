@@ -11,8 +11,8 @@ import os
 import io
 import time
 import base64
-import random
-import string
+import random   # 仅用于验证码视觉渲染干扰元素（非密码学场景）
+import secrets  # Modified: [L-01] 验证码字符选取使用密码学安全随机
 import hashlib
 from typing import Optional, Tuple
 
@@ -20,6 +20,7 @@ from typing import Optional, Tuple
 _captcha_store: dict[str, Tuple[str, float]] = {}
 CAPTCHA_EXPIRE_SECONDS = 300  # 5 分钟过期
 CAPTCHA_LENGTH = 4
+MAX_CAPTCHA_POOL = 10000  # Added: [M-02 安全修复] 防止内存无限膨胀
 
 
 def _cleanup_expired():
@@ -37,8 +38,16 @@ def generate_captcha() -> dict:
     """
     _cleanup_expired()
     
+    # Modified: [M-02 安全修复] 池容量超限时强制淘汰最旧的一半
+    if len(_captcha_store) > MAX_CAPTCHA_POOL:
+        sorted_keys = sorted(_captcha_store, key=lambda k: _captcha_store[k][1])
+        for k in sorted_keys[:len(sorted_keys) // 2]:
+            del _captcha_store[k]
+    
     # 生成随机字符（排除易混淆字符 0OIl1）
-    chars = ''.join(random.choices('ABCDEFGHJKMNPQRSTUVWXYZ23456789', k=CAPTCHA_LENGTH))
+    # Modified: [L-01] 使用 secrets.choice 替代 random.choices
+    _charset = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+    chars = ''.join(secrets.choice(_charset) for _ in range(CAPTCHA_LENGTH))
     
     # 生成唯一 ID
     captcha_id = hashlib.sha256(os.urandom(32)).hexdigest()[:24]
