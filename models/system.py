@@ -51,8 +51,9 @@ class User(Base):
     # 关联角色的 code
     role_code = Column(String(50), nullable=False, default="ordinary")
     
-    # TOTP (双因素验证) 密钥
-    totp_secret = Column(String(32), nullable=True)
+    # Modified: [S-04 安全修复] TOTP 密钥使用 AES-256-GCM 加密存储
+    # 与密码哈希的安全标准保持一致，防止数据库泄露后 TOTP 被直接读取
+    totp_secret = Column(String(255), nullable=True)
     
     # 安全基线策略: 封禁、过期管控
     is_active = Column(Boolean, default=True)

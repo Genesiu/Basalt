@@ -11,13 +11,40 @@ import logging
 
 from core.database import get_db
 from models.system import User, LoginAttempt, SystemConfig, PasswordHistory
-from core.crypto import Hasher, RSACipher
+from core.crypto import Hasher, RSACipher, AESCipher
 from core.auth import create_access_token, get_current_user
 from core.policy import PasswordPolicyEngine
 from core.ip_filter import get_real_ip
 from core.audit import create_audit_log
 from core.mfa_totp import TOTPManager
 from core.captcha import generate_captcha, verify_captcha
+# Modified: [A-01] 使用公共密码服务模块替代本地重复函数
+from core.password_service import get_config_int, record_password_history, check_password_reuse
+
+
+# Added: [S-04 安全修复] TOTP Secret 加解密工具
+# 与密码的 AES 加密共用同一把 AES_ENCRYPTION_KEY_B64，
+# 保证 TOTP 密钥在数据库中以密文形式存储。
+def _encrypt_totp_secret(plaintext_secret: str) -> str:
+    """将 TOTP base32 密钥加密后存入数据库"""
+    cipher = AESCipher()
+    return cipher.encrypt(plaintext_secret)
+
+def _decrypt_totp_secret(encrypted_secret: str) -> str:
+    """从数据库读取 TOTP 密文并解密为原始 base32 密钥"""
+    if not encrypted_secret:
+        return None
+    # 向后兼容：旧的未加密的 base32 密钥长度 <= 32 且不含非 base32 字符
+    # AES 加密后的 Base64 长度远大于 32
+    if len(encrypted_secret) <= 32:
+        return encrypted_secret  # 旧格式明文，兼容读取
+    try:
+        cipher = AESCipher()
+        return cipher.decrypt(encrypted_secret)
+    except Exception:
+        # 解密失败时返回 None，强制用户重新绑定 TOTP
+        logging.warning("[安全] TOTP 密钥解密失败，可能密钥已被篡改或 AES 密钥已轮换")
+        return None
 
 router = APIRouter(tags=["身份鉴别"])
 
@@ -53,27 +80,8 @@ class TOTPSetupResponse(BaseModel):
 
 # ---------- 辅助 ----------
 
-async def _get_config_int(db: AsyncSession, key: str, default: int) -> int:
-    result = await db.execute(select(SystemConfig).where(SystemConfig.key == key))
-    cfg = result.scalars().first()
-    return int(cfg.value) if cfg else default
-
-async def _record_password_history(db: AsyncSession, user_id: int, hashed_password: str, keep_count: int = 5):
-    entry = PasswordHistory(user_id=user_id, hashed_password=hashed_password)
-    db.add(entry)
-    await db.flush()
-    stmt = select(PasswordHistory).where(PasswordHistory.user_id == user_id).order_by(desc(PasswordHistory.created_at))
-    result = await db.execute(stmt)
-    all_history = result.scalars().all()
-    if len(all_history) > keep_count:
-        for old in all_history[keep_count:]:
-            await db.delete(old)
-
-async def _check_password_reuse(db: AsyncSession, user_id: int, new_password: str, keep_count: int = 5) -> bool:
-    stmt = select(PasswordHistory).where(PasswordHistory.user_id == user_id).order_by(desc(PasswordHistory.created_at)).limit(keep_count)
-    result = await db.execute(stmt)
-    history = result.scalars().all()
-    return PasswordPolicyEngine.check_password_history(new_password, [h.hashed_password for h in history])
+# Modified: [A-01] _get_config_int, _record_password_history, _check_password_reuse
+# 已移至 core/password_service.py 统一维护
 
 def _decrypt_payload(encrypted_payload: str) -> dict:
     """用 RSA 私钥解密前端加密的 JSON 载荷"""
@@ -132,9 +140,9 @@ async def login_for_access_token(
     captcha_id = body.captcha_id
     captcha_code = body.captcha_code
     
-    max_failures = await _get_config_int(db, "LOGIN_MAX_FAILURES", 5)
-    lock_mins = await _get_config_int(db, "LOGIN_LOCKOUT_MINUTES", 30)
-    pwd_max_days = await _get_config_int(db, "PWD_MAX_AGE_DAYS", 90)
+    max_failures = await get_config_int(db, "LOGIN_MAX_FAILURES", 5)
+    lock_mins = await get_config_int(db, "LOGIN_LOCKOUT_MINUTES", 30)
+    pwd_max_days = await get_config_int(db, "PWD_MAX_AGE_DAYS", 90)
 
     # --- 0. 验证码校验 ---
     # 当 IP 已有失败记录时强制要求验证码
@@ -226,7 +234,9 @@ async def login_for_access_token(
         if not totp_code:
             raise HTTPException(status_code=401, detail="此账号已启用双因子认证，请提供动态验证码。",
                 headers={"X-TOTP-Required": "true"})
-        if not TOTPManager.verify_totp(user.totp_secret, totp_code):
+        # Modified: [S-04] 从数据库读取的是加密密文，需先解密
+        decrypted_secret = _decrypt_totp_secret(user.totp_secret)
+        if not decrypted_secret or not TOTPManager.verify_totp(decrypted_secret, totp_code):
             await create_audit_log(db=db, request=request, action="LOGIN_TOTP_FAILED", status="FAILED",
                 details={"ip": ip_address}, current_user_id=user.username)
             raise HTTPException(status_code=401, detail="双因子验证码错误或已过期。")
@@ -259,10 +269,10 @@ async def change_password(
     if not Hasher.verify_password(body.old_password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="原密码验证失败。")
     PasswordPolicyEngine.validate_complexity(body.new_password, username=current_user.username)
-    pwd_history_count = await _get_config_int(db, "PWD_HISTORY_COUNT", 5)
-    if await _check_password_reuse(db, current_user.id, body.new_password, pwd_history_count):
+    pwd_history_count = await get_config_int(db, "PWD_HISTORY_COUNT", 5)
+    if await check_password_reuse(db, current_user.id, body.new_password, pwd_history_count):
         raise HTTPException(status_code=400, detail=f"新密码不得与近 {pwd_history_count} 次使用过的密码相同。")
-    await _record_password_history(db, current_user.id, current_user.hashed_password, pwd_history_count)
+    await record_password_history(db, current_user.id, current_user.hashed_password, pwd_history_count)
     current_user.hashed_password = Hasher.get_password_hash(body.new_password)
     current_user.password_updated_at = datetime.utcnow()
     await db.commit()
@@ -293,10 +303,10 @@ async def reset_expired_password(
     if not user or not Hasher.verify_password(old_password, user.hashed_password):
         raise HTTPException(status_code=401, detail="身份验证失败，用户名或原密码错误。")
     PasswordPolicyEngine.validate_complexity(new_password, username=user.username)
-    pwd_history_count = await _get_config_int(db, "PWD_HISTORY_COUNT", 5)
-    if await _check_password_reuse(db, user.id, new_password, pwd_history_count):
+    pwd_history_count = await get_config_int(db, "PWD_HISTORY_COUNT", 5)
+    if await check_password_reuse(db, user.id, new_password, pwd_history_count):
         raise HTTPException(status_code=400, detail=f"新密码不得与近 {pwd_history_count} 次使用过的密码相同。")
-    await _record_password_history(db, user.id, user.hashed_password, pwd_history_count)
+    await record_password_history(db, user.id, user.hashed_password, pwd_history_count)
     user.hashed_password = Hasher.get_password_hash(new_password)
     user.password_updated_at = datetime.utcnow()
     await db.commit()
@@ -364,7 +374,7 @@ async def verify_and_bind_totp(
             details={"reason": "验证码错误"}, current_user_id=current_user.username)
         raise HTTPException(status_code=400, detail="验证码错误，请检查 Authenticator 上的当前代码后重试。")
     
-    current_user.totp_secret = server_secret  # Modified: [C-02] 使用服务端的 secret
+    current_user.totp_secret = _encrypt_totp_secret(server_secret)  # Modified: [S-04] 加密后存储
     await db.commit()
     await create_audit_log(db=db, request=request, action="TOTP_BIND", status="SUCCESS",
         details={}, current_user_id=current_user.username)

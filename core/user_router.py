@@ -13,6 +13,8 @@ from core.crypto import Hasher
 from core.policy import PasswordPolicyEngine
 from core.audit import create_audit_log
 from models.system import User, Role, PasswordHistory, SystemConfig
+# Modified: [A-01] 使用公共密码服务模块替代本地重复函数
+from core.password_service import get_config_int, record_password_history, check_password_reuse
 
 router = APIRouter(tags=["用户管理"])
 
@@ -45,27 +47,8 @@ def _user_to_dict(u: User, role_name: str = None) -> dict:
 
 # ---------- 辅助 ----------
 
-async def _get_config_int(db, key, default):
-    result = await db.execute(select(SystemConfig).where(SystemConfig.key == key))
-    cfg = result.scalars().first()
-    return int(cfg.value) if cfg else default
-
-async def _record_password_history(db, user_id, hashed_password, keep_count=5):
-    entry = PasswordHistory(user_id=user_id, hashed_password=hashed_password)
-    db.add(entry)
-    await db.flush()
-    stmt = select(PasswordHistory).where(PasswordHistory.user_id == user_id).order_by(desc(PasswordHistory.created_at))
-    result = await db.execute(stmt)
-    all_history = result.scalars().all()
-    if len(all_history) > keep_count:
-        for old in all_history[keep_count:]:
-            await db.delete(old)
-
-async def _check_password_reuse(db, user_id, new_password, keep_count=5):
-    stmt = select(PasswordHistory).where(PasswordHistory.user_id == user_id).order_by(desc(PasswordHistory.created_at)).limit(keep_count)
-    result = await db.execute(stmt)
-    history = result.scalars().all()
-    return PasswordPolicyEngine.check_password_history(new_password, [h.hashed_password for h in history])
+# Modified: [A-01] _get_config_int, _record_password_history, _check_password_reuse
+# 已移至 core/password_service.py 统一维护
 
 
 # ============================
@@ -90,10 +73,10 @@ async def update_my_profile(
         if not Hasher.verify_password(body.old_password, current_user.hashed_password):
             raise HTTPException(status_code=400, detail="原密码错误。")
         PasswordPolicyEngine.validate_complexity(body.new_password, username=current_user.username)
-        pwd_history_count = await _get_config_int(db, "PWD_HISTORY_COUNT", 5)
-        if await _check_password_reuse(db, current_user.id, body.new_password, pwd_history_count):
+        pwd_history_count = await get_config_int(db, "PWD_HISTORY_COUNT", 5)
+        if await check_password_reuse(db, current_user.id, body.new_password, pwd_history_count):
             raise HTTPException(status_code=400, detail=f"新密码不得与近 {pwd_history_count} 次使用过的密码相同。")
-        await _record_password_history(db, current_user.id, current_user.hashed_password, pwd_history_count)
+        await record_password_history(db, current_user.id, current_user.hashed_password, pwd_history_count)
         current_user.hashed_password = Hasher.get_password_hash(body.new_password)
         current_user.password_updated_at = datetime.utcnow()
         await db.commit()
