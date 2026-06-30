@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import HTTPException, status
 
 class PasswordPolicyEngine:
@@ -46,7 +46,7 @@ class PasswordPolicyEngine:
         """验证口令是否越界死亡循环 (90 Days)"""
         if not password_updated_at:
             return True
-        delta = datetime.utcnow() - password_updated_at
+        delta = datetime.now(timezone.utc) - password_updated_at
         return delta.days >= cls.PASSWORD_MAX_AGE_DAYS
 
     @classmethod
@@ -55,7 +55,7 @@ class PasswordPolicyEngine:
         if not is_locked:
             return False
             
-        if lock_expires_at and lock_expires_at > datetime.utcnow():
+        if lock_expires_at and lock_expires_at > datetime.now(timezone.utc):
             return True  # 在小黑屋时期
             
         return False  # 已过封禁衰减期

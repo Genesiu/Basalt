@@ -1,5 +1,5 @@
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, JSON
 from core.database import Base
 
@@ -78,7 +78,7 @@ class PasswordHistory(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class LoginAttempt(Base):
     """
@@ -90,7 +90,7 @@ class LoginAttempt(Base):
     ip_address = Column(String(45), nullable=False, index=True)
     username = Column(String(50), nullable=True, index=True)
     success = Column(Boolean, default=False)
-    attempt_time = Column(DateTime, default=datetime.utcnow)
+    attempt_time = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class IPWhitelist(Base):
     """
@@ -101,4 +101,4 @@ class IPWhitelist(Base):
     id = Column(Integer, primary_key=True, index=True)
     ip_network = Column(String(45), nullable=False) # 格式例: 192.168.1.0/24
     description = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

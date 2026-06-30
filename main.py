@@ -202,15 +202,24 @@ async def _seed_initial_data():
             await session.commit()
             print(f"[SECURITY NOTICE] 等保基线及动态 RBAC 模型映射装载完毕。[DB: {get_db_type()}]")
 
-        # 4. 初始化默认 IP 白名单（避免首次部署被锁死）
+        # 4. 初始化默认 IP 白名单
+        # Modified: [Q-04] 默认仅放行环回地址，通过 IP_WHITELIST_ALLOW_ALL=true 可切换为全放行（开发模式）
         res_wl = await session.execute(select(IPWhitelist))
         if not res_wl.scalars().first():
-            session.add_all([
-                IPWhitelist(ip_network="0.0.0.0/0", description="默认放行所有 IPv4（生产环境请收紧为管理网段）"),
-                IPWhitelist(ip_network="::/0", description="默认放行所有 IPv6（生产环境请收紧为管理网段）"),
-            ])
+            allow_all = os.environ.get("IP_WHITELIST_ALLOW_ALL", "false").lower() == "true"
+            if allow_all:
+                session.add_all([
+                    IPWhitelist(ip_network="0.0.0.0/0", description="开发模式：放行所有 IPv4"),
+                    IPWhitelist(ip_network="::/0", description="开发模式：放行所有 IPv6"),
+                ])
+                logging.warning("[SECURITY NOTICE] IP 白名单已设置为全放行模式 (IP_WHITELIST_ALLOW_ALL=true)，生产环境请关闭。")
+            else:
+                session.add_all([
+                    IPWhitelist(ip_network="127.0.0.1/32", description="IPv4 环回地址"),
+                    IPWhitelist(ip_network="::1/128", description="IPv6 环回地址"),
+                ])
+                logging.info("[安全] 默认 IP 白名单仅放行环回地址。如需远程访问，请在管理后台添加管理网段或设置 IP_WHITELIST_ALLOW_ALL=true。")
             await session.commit()
-            print("[SECURITY NOTICE] 已植入默认 IP 白名单 (0.0.0.0/0)，生产环境请在管理后台「安全策略」中收紧。")
 
 
 @asynccontextmanager

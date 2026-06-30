@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -78,7 +78,7 @@ async def update_my_profile(
             raise HTTPException(status_code=400, detail=f"新密码不得与近 {pwd_history_count} 次使用过的密码相同。")
         await record_password_history(db, current_user.id, current_user.hashed_password, pwd_history_count)
         current_user.hashed_password = Hasher.get_password_hash(body.new_password)
-        current_user.password_updated_at = datetime.utcnow()
+        current_user.password_updated_at = datetime.now(timezone.utc)
         await db.commit()
         # Added: [SEC-01] 改密后立即吊销旧 Token
         from core.auth import revoke_user_tokens
@@ -164,7 +164,7 @@ async def disable_user(
     target.is_active = False
     target.totp_secret = None
     target.encrypted_phone = None
-    target.password_updated_at = datetime.utcnow()
+    target.password_updated_at = datetime.now(timezone.utc)
     await db.commit()
     # Added: 立即吊销该用户所有已颁发的 JWT Token
     from core.auth import revoke_user_tokens

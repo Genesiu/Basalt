@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -146,7 +146,7 @@ async def login_for_access_token(
 
     # --- 0. 验证码校验 ---
     # 当 IP 已有失败记录时强制要求验证码
-    time_threshold = datetime.utcnow() - timedelta(minutes=lock_mins)
+    time_threshold = datetime.now(timezone.utc) - timedelta(minutes=lock_mins)
     ip_fail_stmt = select(func.count()).select_from(LoginAttempt).where(
         LoginAttempt.ip_address == ip_address,
         LoginAttempt.attempt_time >= time_threshold,
@@ -189,7 +189,7 @@ async def login_for_access_token(
         remaining = max(0, max_failures - (fail_count + 1))
         if remaining <= 0 and user:
             user.is_locked = True
-            user.lock_expires_at = datetime.utcnow() + timedelta(minutes=lock_mins)
+            user.lock_expires_at = datetime.now(timezone.utc) + timedelta(minutes=lock_mins)
             await db.commit()
         await create_audit_log(db=db, request=request, action="LOGIN_FAILED", status="FAILED",
             details={"ip": ip_address, "remaining": remaining}, current_user_id=username)
@@ -212,7 +212,7 @@ async def login_for_access_token(
 
     # --- 4. 密码过期 / 首登改密 ---
     if user.password_updated_at:
-        days_since = (datetime.utcnow() - user.password_updated_at).days
+        days_since = (datetime.now(timezone.utc) - user.password_updated_at).days
         if days_since >= pwd_max_days:
             await create_audit_log(db=db, request=request, action="LOGIN_PWD_EXPIRED", status="BLOCKED",
                 details={"days_since": days_since, "max_days": pwd_max_days}, current_user_id=user.username)
@@ -244,7 +244,7 @@ async def login_for_access_token(
     # --- 7. 登录成功 ---
     attempt = LoginAttempt(ip_address=ip_address, username=username, success=True)
     db.add(attempt)
-    user.last_login_at = datetime.utcnow()
+    user.last_login_at = datetime.now(timezone.utc)
     await db.commit()
 
     await create_audit_log(db=db, request=request, action="LOGIN_SUCCESS", status="SUCCESS",
@@ -274,7 +274,7 @@ async def change_password(
         raise HTTPException(status_code=400, detail=f"新密码不得与近 {pwd_history_count} 次使用过的密码相同。")
     await record_password_history(db, current_user.id, current_user.hashed_password, pwd_history_count)
     current_user.hashed_password = Hasher.get_password_hash(body.new_password)
-    current_user.password_updated_at = datetime.utcnow()
+    current_user.password_updated_at = datetime.now(timezone.utc)
     await db.commit()
     # Added: [SEC-01] 改密后立即吊销旧 Token
     from core.auth import revoke_user_tokens
@@ -308,7 +308,7 @@ async def reset_expired_password(
         raise HTTPException(status_code=400, detail=f"新密码不得与近 {pwd_history_count} 次使用过的密码相同。")
     await record_password_history(db, user.id, user.hashed_password, pwd_history_count)
     user.hashed_password = Hasher.get_password_hash(new_password)
-    user.password_updated_at = datetime.utcnow()
+    user.password_updated_at = datetime.now(timezone.utc)
     await db.commit()
     # Added: [SEC-01] 改密后立即吊销旧 Token
     from core.auth import revoke_user_tokens

@@ -79,8 +79,8 @@ async def export_audit_csv(
         ])
 
     output.seek(0)
-    from datetime import datetime
-    filename = f"audit_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    from datetime import datetime, timezone
+    filename = f"audit_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
 
     return StreamingResponse(
         iter([output.getvalue()]),
