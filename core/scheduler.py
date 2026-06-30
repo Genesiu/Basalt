@@ -168,18 +168,19 @@ def _cleanup_login_attempts():
         keep_days = int(os.environ.get("LOGIN_ATTEMPT_KEEP_DAYS", "30"))
         try:
             async with AsyncSessionLocal() as session:
+                # Modified: [S-01 安全修复] 使用参数化查询替代 f-string SQL 拼接
                 if is_sqlite():
                     await session.execute(sa_text(
-                        f"DELETE FROM login_attempts WHERE attempt_time < datetime('now', '-{keep_days} days')"
-                    ))
+                        "DELETE FROM login_attempts WHERE attempt_time < datetime('now', '-' || :days || ' days')"
+                    ), {"days": keep_days})
                 elif "mysql" in DATABASE_URL:
                     await session.execute(sa_text(
-                        f"DELETE FROM login_attempts WHERE attempt_time < NOW() - INTERVAL {keep_days} DAY"
-                    ))
+                        "DELETE FROM login_attempts WHERE attempt_time < NOW() - INTERVAL :days DAY"
+                    ), {"days": keep_days})
                 else:
                     await session.execute(sa_text(
-                        f"DELETE FROM login_attempts WHERE attempt_time < NOW() - INTERVAL '{keep_days} days'"
-                    ))
+                        "DELETE FROM login_attempts WHERE attempt_time < NOW() - INTERVAL :days * INTERVAL '1 day'"
+                    ), {"days": keep_days})
                 await session.commit()
             logger.info(f"[清理] 已清理 {keep_days} 天前的登录尝试记录")
         except Exception as e:

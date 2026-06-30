@@ -5,6 +5,10 @@
 无需外部服务依赖（如 reCAPTCHA）。
 
 验证码存储在内存中（进程级缓存），5分钟自动过期。
+
+⚠️ [S-03 部署约束] 本模块使用进程内存缓存，仅支持单 Worker 部署。
+多 Worker 模式下（uvicorn --workers N > 1），验证码生成和校验可能路由到不同 Worker，
+导致校验永远失败。生产环境如需多 Worker，请替换为 Redis 等共享存储。
 """
 
 import os
@@ -69,6 +73,9 @@ def verify_captcha(captcha_id: str, user_input: str) -> bool:
     """
     校验验证码（一次性消费，验证后立即删除）
     返回 True 表示验证通过
+
+    ⚠️ [S-03 部署约束] 本模块使用进程内存缓存，仅支持单 Worker 部署。
+    多 Worker 模式下，若请求路由至不同 Worker，验证码校验将始终返回失败。
     """
     if not captcha_id or not user_input:
         return False

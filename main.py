@@ -164,7 +164,6 @@ async def _seed_initial_data():
 
         if need_init:
             default_pwd = base64.b64encode(os.urandom(12)).decode()
-            logging.warning(f"[SECURITY NOTICE] 初始管理员密码: {default_pwd} — 请立即登录修改！")
             hashed = Hasher.get_password_hash(default_pwd)
 
             sysadmin_res2 = await session.execute(select(User).where(User.username == "sysadmin"))
@@ -177,6 +176,15 @@ async def _seed_initial_data():
                 session.add(User(username="auditadmin", hashed_password=hashed,
                     role_code="auditadmin", password_updated_at=None))
             await session.commit()
+
+            # Modified: [Q-03 安全修复] 初始密码写入临时文件而非日志流
+            # 防止容器化部署中密码被日志收集系统（ELK/Splunk）永久捕获
+            _pwd_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".initial_password")
+            with open(_pwd_file, "w") as pf:
+                pf.write(f"初始管理员密码: {default_pwd}\n")
+                pf.write("⚠️ 请立即登录修改密码，然后删除此文件！\n")
+            os.chmod(_pwd_file, 0o600)
+            logging.warning(f"[SECURITY NOTICE] 初始管理员密码已写入 {_pwd_file}，请查阅后立即删除。")
             
         # 3. 注入系统基线配置
         res_cfg = await session.execute(select(SystemConfig))

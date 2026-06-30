@@ -41,6 +41,8 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 # ============================================================
 # Added: JWT 黑名单（内存级 Token 吊销机制）
+# ⚠️ [S-03 部署约束] 进程内存缓存，仅支持单 Worker 部署。
+#    多 Worker 下吊销操作仅在当前 Worker 生效，其他 Worker 无感知。
 # ============================================================
 _token_blacklist: dict[str, float] = {}  # {username: revoke_timestamp}
 _blacklist_lock = threading.Lock()

@@ -150,7 +150,7 @@ async def login_for_access_token(
     ip_fail_stmt = select(func.count()).select_from(LoginAttempt).where(
         LoginAttempt.ip_address == ip_address,
         LoginAttempt.attempt_time >= time_threshold,
-        LoginAttempt.success == False
+        LoginAttempt.success.is_(False)
     )
     ip_fail_count = (await db.execute(ip_fail_stmt)).scalar()
     
@@ -158,7 +158,7 @@ async def login_for_access_token(
     username_fail_stmt = select(func.count()).select_from(LoginAttempt).where(
         LoginAttempt.username == username,
         LoginAttempt.attempt_time >= time_threshold,
-        LoginAttempt.success == False
+        LoginAttempt.success.is_(False)
     )
     username_fail_count = (await db.execute(username_fail_stmt)).scalar()
     
