@@ -33,84 +33,103 @@ _scheduler: BackgroundScheduler = None
 _config = {}
 
 
+# Modified: [A-03 架构修复] 将 _run_backup 拆分为策略模式，降低圈复杂度 (CC=20 → ~5)
+
+def _backup_sqlite(backup_dir: str, ts: str) -> str:
+    """SQLite 备份策略：优先 .dump，回退到文件拷贝"""
+    db_path = DATABASE_URL.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
+    if db_path.startswith("./"):
+        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", db_path[2:])
+
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"数据库文件不存在: {db_path}")
+
+    dump_file = os.path.join(backup_dir, f"basalt_backup_{ts}.sql")
+    try:
+        result = subprocess.run(
+            [_SQLITE3_PATH, db_path, ".dump"],
+            capture_output=True, text=True, timeout=60
+        )
+        with open(dump_file, "w") as f:
+            f.write(result.stdout)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        logger.warning(f"[备份] sqlite3 工具不可用，回退到文件拷贝: {e}")
+        dump_file = os.path.join(backup_dir, f"basalt_backup_{ts}.db")
+        shutil.copy2(db_path, dump_file)
+    return dump_file
+
+
+def _backup_postgresql(backup_dir: str, ts: str) -> str:
+    """PostgreSQL 备份策略：使用 pg_dump"""
+    from urllib.parse import urlparse
+    dump_file = os.path.join(backup_dir, f"basalt_backup_{ts}.sql")
+    parsed = urlparse(DATABASE_URL.replace("+asyncpg", ""))
+    env = os.environ.copy()
+    env["PGPASSWORD"] = parsed.password or ""
+    subprocess.run([
+        _PGDUMP_PATH,
+        "-h", parsed.hostname or "localhost",
+        "-p", str(parsed.port or 5432),
+        "-U", parsed.username or "postgres",
+        "-f", dump_file,
+        parsed.path.lstrip("/")
+    ], env=env, timeout=300, check=True)
+    return dump_file
+
+
+def _backup_mysql(backup_dir: str, ts: str) -> str:
+    """MySQL 备份策略：使用 mysqldump + InnoDB 一致性快照"""
+    from urllib.parse import urlparse
+    dump_file = os.path.join(backup_dir, f"basalt_backup_{ts}.sql")
+    parsed = urlparse(DATABASE_URL.replace("+aiomysql", ""))
+    with open(dump_file, "w") as dump_fh:
+        subprocess.run([
+            _MYSQLDUMP_PATH,
+            "-h", parsed.hostname or "localhost",
+            "-P", str(parsed.port or 3306),
+            "-u", parsed.username or "root",
+            f"-p{parsed.password or ''}",
+            "--single-transaction",
+            parsed.path.lstrip("/")
+        ], stdout=dump_fh, timeout=300, check=True)
+    return dump_file
+
+
+# 策略分派表
+_backup_strategies = {
+    "sqlite": _backup_sqlite,
+    "postgresql": _backup_postgresql,
+    "mysql": _backup_mysql,
+}
+
+
+def _get_db_key() -> str:
+    """从 DATABASE_URL 推断数据库类型键"""
+    if is_sqlite():
+        return "sqlite"
+    if "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL:
+        return "postgresql"
+    if "mysql" in DATABASE_URL:
+        return "mysql"
+    return "unknown"
+
+
 def _run_backup() -> dict:
-    """执行数据库备份（支持 SQLite / PostgreSQL / MySQL）"""
+    """执行数据库备份（策略模式分派到具体数据库实现）"""
     backup_dir = _config.get("backup_dir", BACKUP_DIR)
     os.makedirs(backup_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     try:
-        if is_sqlite():
-            db_path = DATABASE_URL.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
-            if db_path.startswith("./"):
-                db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", db_path[2:])
+        db_key = _get_db_key()
+        strategy = _backup_strategies.get(db_key)
+        if not strategy:
+            return {"status": "skipped", "error": f"不支持的数据库类型: {db_key}"}
 
-            if not os.path.exists(db_path):
-                logger.warning(f"[备份] 数据库文件不存在: {db_path}")
-                return {"status": "failed", "error": f"数据库文件不存在: {db_path}"}
-
-            dump_file = os.path.join(backup_dir, f"basalt_backup_{ts}.sql")
-            gz_file = dump_file + ".gz"
-
-            try:
-                # Modified: [L-02] 使用绝对路径
-                result = subprocess.run(
-                    [_SQLITE3_PATH, db_path, ".dump"],
-                    capture_output=True, text=True, timeout=60
-                )
-                with open(dump_file, "w") as f:
-                    f.write(result.stdout)
-            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-                logger.warning(f"[备份] sqlite3 工具不可用，回退到文件拷贝: {e}")
-                shutil.copy2(db_path, dump_file.replace(".sql", ".db"))
-                dump_file = dump_file.replace(".sql", ".db")
-                gz_file = dump_file + ".gz"
-
-        elif "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL:
-            dump_file = os.path.join(backup_dir, f"basalt_backup_{ts}.sql")
-            gz_file = dump_file + ".gz"
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(DATABASE_URL.replace("+asyncpg", ""))
-                env = os.environ.copy()
-                env["PGPASSWORD"] = parsed.password or ""
-                # Modified: [L-02] 使用绝对路径
-                subprocess.run([
-                    _PGDUMP_PATH,
-                    "-h", parsed.hostname or "localhost",
-                    "-p", str(parsed.port or 5432),
-                    "-U", parsed.username or "postgres",
-                    "-f", dump_file,
-                    parsed.path.lstrip("/")
-                ], env=env, timeout=300, check=True)
-            except Exception as e:
-                logger.error(f"[备份] PostgreSQL dump 失败: {e}")
-                return {"status": "failed", "error": str(e)}
-
-        elif "mysql" in DATABASE_URL:
-            dump_file = os.path.join(backup_dir, f"basalt_backup_{ts}.sql")
-            gz_file = dump_file + ".gz"
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(DATABASE_URL.replace("+aiomysql", ""))
-                # Modified: [L-02] 使用绝对路径 + [L-03] with 管理文件句柄
-                with open(dump_file, "w") as dump_fh:
-                    subprocess.run([
-                        _MYSQLDUMP_PATH,
-                        "-h", parsed.hostname or "localhost",
-                        "-P", str(parsed.port or 3306),
-                        "-u", parsed.username or "root",
-                        f"-p{parsed.password or ''}",
-                        "--single-transaction",  # Added: MySQL InnoDB 一致性快照
-                        parsed.path.lstrip("/")
-                    ], stdout=dump_fh, timeout=300, check=True)
-            except Exception as e:
-                logger.error(f"[备份] MySQL dump 失败: {e}")
-                return {"status": "failed", "error": str(e)}
-        else:
-            return {"status": "skipped", "error": "不支持的数据库类型"}
+        dump_file = strategy(backup_dir, ts)
 
         # 压缩
+        gz_file = dump_file + ".gz"
         with open(dump_file, "rb") as f_in:
             with gzip.open(gz_file, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
@@ -127,8 +146,6 @@ def _run_backup() -> dict:
 
         file_size = os.path.getsize(gz_file) / 1024
         logger.info(f"[备份完成] {gz_file} ({file_size:.1f} KB)")
-
-        # 清理过期备份
         _cleanup_old_backups()
 
         return {
