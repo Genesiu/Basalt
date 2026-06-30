@@ -246,7 +246,7 @@ async def lifespan(app: FastAPI):
 # FastAPI 实例（使用 lifespan 替代 on_event）
 # ============================================================
 app = FastAPI(
-    title="Basalt Framework — AI-Native Security Microkernel",
+    title="Basalt — Security Microkernel Framework",
     description="Build on Basalt. Secure by default. | by Genesiu",
     version="2.4.0",
     docs_url=None if _is_production else "/docs",

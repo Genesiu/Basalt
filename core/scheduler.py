@@ -196,7 +196,7 @@ def _cleanup_login_attempts():
                     ), {"days": keep_days})
                 else:
                     await session.execute(sa_text(
-                        "DELETE FROM login_attempts WHERE attempt_time < NOW() - INTERVAL :days * INTERVAL '1 day'"
+                        "DELETE FROM login_attempts WHERE attempt_time < NOW() - make_interval(days => :days)"
                     ), {"days": keep_days})
                 await session.commit()
             logger.info(f"[清理] 已清理 {keep_days} 天前的登录尝试记录")

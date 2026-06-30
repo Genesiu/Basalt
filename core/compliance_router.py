@@ -61,7 +61,7 @@ async def update_backup_config(
     await create_audit_log(
         db=db, request=request,
         action="UPDATE_BACKUP_CONFIG", status="SUCCESS",
-        details=body.dict(exclude_none=True),
+        details=body.model_dump(exclude_none=True),
         current_user_id=current_user.username
     )
     return result

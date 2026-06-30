@@ -14,7 +14,7 @@ class RSACipher:
     安全设计要点:
     - 公钥暴露在前端 JS 中是安全的（只能加密，不能解密）
     - 私钥仅存在于服务端内存（每次启动重新生成，或从环境变量加载）
-    - 使用 OAEP + SHA-256 填充，抗选择密文攻击
+    - 使用 PKCS1v15 填充（受前端 jsencrypt 库限制，计划迁移到 OAEP）
     """
     _instance = None
     _lock = threading.Lock()  # Added: [M-03 安全修复] 线程安全锁
